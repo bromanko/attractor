@@ -14,6 +14,33 @@
         selfci-pkg = selfci.packages.${system}.default;
       in
       {
+        packages.default = pkgs.buildNpmPackage {
+          pname = "attractor";
+          version = "0.1.0";
+          src = ./.;
+          npmDepsHash = "sha256-2vhgQj/2g5qlCjJGTWzyi85MFaEqC2ppy7PEfoc1kXQ=";
+          buildPhase = ''
+            npm run build
+          '';
+          installPhase = ''
+            mkdir -p $out/lib/attractor $out/bin
+            cp -r dist $out/lib/attractor/
+            cp package.json $out/lib/attractor/
+
+            cat > $out/bin/attractor <<EOF
+            #!/usr/bin/env bash
+            exec ${pkgs.nodejs_22}/bin/node $out/lib/attractor/dist/cli.js "\$@"
+            EOF
+            chmod +x $out/bin/attractor
+          '';
+
+          meta = with pkgs.lib; {
+            description = "DOT-based pipeline runner for AI workflows";
+            license = licenses.asl20;
+            mainProgram = "attractor";
+          };
+        };
+
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
             nodejs_22
