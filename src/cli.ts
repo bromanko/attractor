@@ -40,6 +40,11 @@ Run options:
 Environment:
   ANTHROPIC_API_KEY      API key for Anthropic provider
   ANTHROPIC_BASE_URL     Custom base URL for Anthropic API
+
+Auth:
+  If no ANTHROPIC_API_KEY is set, attractor reads ~/.pi/agent/auth.json
+  for credentials stored by pi's /login command. This enables using a
+  Claude Pro/Max subscription instead of a Console API key.
 `.trim());
   process.exit(1);
 }

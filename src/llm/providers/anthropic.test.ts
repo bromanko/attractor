@@ -67,11 +67,15 @@ describe("AnthropicAdapter", () => {
   });
 
   describe("constructor", () => {
-    it("throws ConfigurationError when no API key", () => {
+    it("throws ConfigurationError when no API key on first request", async () => {
       const orig = process.env.ANTHROPIC_API_KEY;
       delete process.env.ANTHROPIC_API_KEY;
       try {
-        expect(() => new AnthropicAdapter()).toThrow(ConfigurationError);
+        // Key resolution is lazy — error occurs on first complete(), not in constructor.
+        const adapter = new AnthropicAdapter({ authJsonPath: false });
+        await expect(adapter.complete(simpleRequest())).rejects.toThrow(
+          ConfigurationError,
+        );
       } finally {
         if (orig) process.env.ANTHROPIC_API_KEY = orig;
       }
@@ -374,6 +378,128 @@ describe("AnthropicAdapter", () => {
       expect(body.messages).toHaveLength(1);
       expect(body.messages[0].role).toBe("user");
       expect(body.messages[0].content).toHaveLength(2);
+    });
+  });
+
+  describe("OAuth / Claude subscription", () => {
+    function makeOAuthAdapter() {
+      return new AnthropicAdapter({
+        apiKey: "sk-ant-oat01-test-token",
+        authJsonPath: false,
+      });
+    }
+
+    it("detects OAuth tokens and sends Bearer auth + stealth headers", async () => {
+      const fetchMock = mockFetch(anthropicResponse());
+      globalThis.fetch = fetchMock;
+      const adapter = makeOAuthAdapter();
+
+      await adapter.complete(simpleRequest());
+
+      const [url, opts] = fetchMock.mock.calls[0];
+      expect(url).toBe("https://api.anthropic.com/v1/messages");
+
+      // Should use Bearer auth instead of x-api-key
+      expect(opts.headers["Authorization"]).toBe("Bearer sk-ant-oat01-test-token");
+      expect(opts.headers["x-api-key"]).toBeUndefined();
+
+      // Should include Claude Code stealth headers
+      expect(opts.headers["anthropic-beta"]).toContain("claude-code-20250219");
+      expect(opts.headers["anthropic-beta"]).toContain("oauth-2025-04-20");
+      expect(opts.headers["user-agent"]).toContain("claude-cli/");
+      expect(opts.headers["x-app"]).toBe("cli");
+    });
+
+    it("prepends Claude Code system prompt identity", async () => {
+      const fetchMock = mockFetch(anthropicResponse());
+      globalThis.fetch = fetchMock;
+      const adapter = makeOAuthAdapter();
+
+      await adapter.complete(
+        simpleRequest({
+          messages: [Msg.system("Be helpful"), Msg.user("Hi")],
+        }),
+      );
+
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      // System should be an array with Claude Code identity first
+      expect(Array.isArray(body.system)).toBe(true);
+      expect(body.system[0].text).toContain("Claude Code");
+      expect(body.system[1].text).toBe("Be helpful");
+    });
+
+    it("renames tools to Claude Code canonical names", async () => {
+      const fetchMock = mockFetch(anthropicResponse());
+      globalThis.fetch = fetchMock;
+      const adapter = makeOAuthAdapter();
+
+      await adapter.complete(
+        simpleRequest({
+          tools: [
+            {
+              name: "read_file",
+              description: "Read a file",
+              parameters: { type: "object", properties: { path: { type: "string" } } },
+            },
+            {
+              name: "bash",
+              description: "Run shell",
+              parameters: { type: "object", properties: { command: { type: "string" } } },
+            },
+          ],
+        }),
+      );
+
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      // "read_file" doesn't match a CC tool, but "bash" → "Bash"
+      expect(body.tools[0].name).toBe("read_file");
+      expect(body.tools[1].name).toBe("Bash");
+    });
+
+    it("reverse-maps Claude Code tool names in response back to caller names", async () => {
+      const fetchMock = mockFetch(
+        anthropicResponse({
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu_01abc",
+              name: "Bash",
+              input: { command: "ls" },
+            },
+          ],
+          stop_reason: "tool_use",
+        }),
+      );
+      globalThis.fetch = fetchMock;
+      const adapter = makeOAuthAdapter();
+
+      const result = await adapter.complete(
+        simpleRequest({
+          tools: [
+            {
+              name: "bash",
+              description: "Run shell",
+              parameters: { type: "object", properties: { command: { type: "string" } } },
+            },
+          ],
+        }),
+      );
+
+      // "Bash" from API should be mapped back to "bash" (caller's name)
+      expect(result.message.content[0].tool_call!.name).toBe("bash");
+    });
+
+    it("does NOT use stealth mode for regular API keys", async () => {
+      const fetchMock = mockFetch(anthropicResponse());
+      globalThis.fetch = fetchMock;
+      const adapter = makeAdapter(); // uses "test-key"
+
+      await adapter.complete(simpleRequest());
+
+      const [, opts] = fetchMock.mock.calls[0];
+      expect(opts.headers["x-api-key"]).toBe("test-key");
+      expect(opts.headers["Authorization"]).toBeUndefined();
+      expect(opts.headers["x-app"]).toBeUndefined();
     });
   });
 

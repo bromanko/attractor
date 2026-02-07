@@ -2,6 +2,10 @@
  * Anthropic Provider Adapter — implements ProviderAdapter for the
  * Anthropic Messages API (https://docs.anthropic.com/en/api/messages).
  *
+ * Supports both Console API keys and Claude Pro/Max subscription OAuth tokens.
+ * OAuth tokens (sk-ant-oat*) are detected automatically and use Claude Code's
+ * API conventions (stealth mode headers, system prompt identity, tool renaming).
+ *
  * Uses Node's built-in fetch — no external dependencies.
  */
 
@@ -22,13 +26,24 @@ import {
   ConfigurationError,
   NetworkError,
 } from "../types.js";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { homedir } from "node:os";
 
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 
 export type AnthropicConfig = {
-  /** API key. Falls back to ANTHROPIC_API_KEY env var. */
+  /**
+   * API key or OAuth token. Resolution order:
+   * 1. This value (if provided)
+   * 2. ~/.pi/agent/auth.json anthropic OAuth token (if present)
+   * 3. ANTHROPIC_API_KEY environment variable
+   *
+   * OAuth tokens (starting with "sk-ant-oat") automatically enable
+   * Claude Code stealth mode for Claude Pro/Max subscriptions.
+   */
   apiKey?: string;
   /** Base URL. Falls back to ANTHROPIC_BASE_URL or default. */
   baseUrl?: string;
@@ -36,11 +51,97 @@ export type AnthropicConfig = {
   apiVersion?: string;
   /** Default max_tokens when not specified in request. */
   defaultMaxTokens?: number;
+  /**
+   * Path to pi auth.json file. Defaults to ~/.pi/agent/auth.json.
+   * Set to false to disable auth.json lookup entirely.
+   */
+  authJsonPath?: string | false;
 };
 
 const DEFAULT_BASE_URL = "https://api.anthropic.com";
 const DEFAULT_API_VERSION = "2023-06-01";
 const DEFAULT_MAX_TOKENS = 8192;
+
+// ---------------------------------------------------------------------------
+// Claude Code stealth mode constants (for OAuth/subscription tokens)
+// ---------------------------------------------------------------------------
+
+const CLAUDE_CODE_VERSION = "2.1.2";
+const CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude.";
+
+/**
+ * Claude Code canonical tool names (case-sensitive).
+ * When using an OAuth token, our tool names are mapped to these so the
+ * Anthropic API treats them identically to Claude Code tool calls.
+ */
+const CLAUDE_CODE_TOOLS = [
+  "Read", "Write", "Edit", "Bash", "Grep", "Glob",
+  "AskUserQuestion", "EnterPlanMode", "ExitPlanMode", "KillShell",
+  "NotebookEdit", "Skill", "Task", "TaskOutput", "TodoWrite",
+  "WebFetch", "WebSearch",
+];
+
+const CC_TOOL_LOOKUP = new Map(CLAUDE_CODE_TOOLS.map((t) => [t.toLowerCase(), t]));
+
+/** Map a tool name to Claude Code canonical casing, if it matches. */
+function toClaudeCodeName(name: string): string {
+  return CC_TOOL_LOOKUP.get(name.toLowerCase()) ?? name;
+}
+
+/** Map a Claude Code name back to the original tool name using the request's tool list. */
+function fromClaudeCodeName(name: string, tools?: ToolDefinition[]): string {
+  if (tools && tools.length > 0) {
+    const lower = name.toLowerCase();
+    const matched = tools.find((t) => t.name.toLowerCase() === lower);
+    if (matched) return matched.name;
+  }
+  return name;
+}
+
+/** Detect whether an API key is an OAuth token from a Claude subscription. */
+function isOAuthToken(apiKey: string): boolean {
+  return apiKey.includes("sk-ant-oat");
+}
+
+// ---------------------------------------------------------------------------
+// Pi auth.json reader
+// ---------------------------------------------------------------------------
+
+type PiAuthEntry =
+  | { type: "api_key"; key: string }
+  | { type: "oauth"; access: string; refresh: string; expires: number };
+
+/**
+ * Attempt to read an Anthropic credential from pi's auth.json.
+ * Returns the API key / OAuth access token, or undefined.
+ */
+async function readPiAuthJson(path: string): Promise<string | undefined> {
+  try {
+    const raw = await readFile(path, "utf-8");
+    const auth = JSON.parse(raw) as Record<string, PiAuthEntry>;
+    const entry = auth.anthropic;
+    if (!entry) return undefined;
+
+    if (entry.type === "oauth") {
+      // Check if the token is expired (with 60s buffer)
+      if (entry.expires && Date.now() > entry.expires - 60_000) {
+        // Token expired — caller should fall back to env var or error.
+        // We don't refresh here; pi manages token refresh itself.
+        return undefined;
+      }
+      return entry.access;
+    }
+
+    if (entry.type === "api_key") {
+      return entry.key;
+    }
+
+    return undefined;
+  } catch {
+    // File not found or unreadable — that's fine.
+    return undefined;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Anthropic API types (subset we need)
@@ -405,35 +506,89 @@ function convertAnthropicUsage(
 
 export class AnthropicAdapter implements ProviderAdapter {
   readonly name = "anthropic";
-  private _apiKey: string;
+  private _apiKey: string | undefined;
+  private _apiKeyPromise: Promise<string> | undefined;
+  private _isOAuth: boolean | undefined;
   private _baseUrl: string;
   private _apiVersion: string;
   private _defaultMaxTokens: number;
+  private _config: AnthropicConfig;
 
   constructor(config: AnthropicConfig = {}) {
-    const apiKey =
-      config.apiKey ?? process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) {
-      throw new ConfigurationError(
-        "Anthropic API key not provided. Set ANTHROPIC_API_KEY or pass apiKey in config.",
-      );
-    }
-    this._apiKey = apiKey;
+    this._config = config;
     this._baseUrl =
       config.baseUrl ??
       process.env.ANTHROPIC_BASE_URL ??
       DEFAULT_BASE_URL;
     this._apiVersion = config.apiVersion ?? DEFAULT_API_VERSION;
     this._defaultMaxTokens = config.defaultMaxTokens ?? DEFAULT_MAX_TOKENS;
+
+    // If an explicit key is provided, use it immediately.
+    if (config.apiKey) {
+      this._apiKey = config.apiKey;
+      this._isOAuth = isOAuthToken(config.apiKey);
+    } else if (process.env.ANTHROPIC_API_KEY) {
+      // Environment variable — use directly.
+      this._apiKey = process.env.ANTHROPIC_API_KEY;
+      this._isOAuth = isOAuthToken(this._apiKey);
+    }
+    // Otherwise, defer to lazy initialization (auth.json lookup).
+  }
+
+  /**
+   * Lazily resolve the API key. Checks (in order):
+   * 1. Already resolved (from constructor)
+   * 2. Pi auth.json (~/.pi/agent/auth.json)
+   * 3. ANTHROPIC_API_KEY env var (re-check)
+   */
+  private async resolveApiKey(): Promise<string> {
+    if (this._apiKey) return this._apiKey;
+
+    // Deduplicate concurrent callers
+    if (!this._apiKeyPromise) {
+      this._apiKeyPromise = this._resolveApiKeyOnce();
+    }
+    return this._apiKeyPromise;
+  }
+
+  private async _resolveApiKeyOnce(): Promise<string> {
+    // Try pi auth.json
+    if (this._config.authJsonPath !== false) {
+      const authPath =
+        typeof this._config.authJsonPath === "string"
+          ? this._config.authJsonPath
+          : join(homedir(), ".pi", "agent", "auth.json");
+      const key = await readPiAuthJson(authPath);
+      if (key) {
+        this._apiKey = key;
+        this._isOAuth = isOAuthToken(key);
+        return key;
+      }
+    }
+
+    // Final fallback to env var
+    const envKey = process.env.ANTHROPIC_API_KEY;
+    if (envKey) {
+      this._apiKey = envKey;
+      this._isOAuth = isOAuthToken(envKey);
+      return envKey;
+    }
+
+    throw new ConfigurationError(
+      "Anthropic API key not provided. Set ANTHROPIC_API_KEY, pass apiKey in config, " +
+      "or login via pi (/login) to use a Claude Pro/Max subscription.",
+    );
   }
 
   async complete(request: Request): Promise<Response> {
+    await this.resolveApiKey();
     const body = this.buildRequestBody(request);
     const raw = await this.post("/v1/messages", body);
-    return this.convertResponse(raw);
+    return this.convertResponse(raw, request);
   }
 
   async *stream(request: Request): AsyncIterable<StreamEvent> {
+    await this.resolveApiKey();
     const body = this.buildRequestBody(request);
     body.stream = true;
 
@@ -485,6 +640,7 @@ export class AnthropicAdapter implements ProviderAdapter {
             for (const streamEvent of this.processStreamEvent(
               event,
               { messageId, model, currentToolCall, totalUsage },
+              request.tools,
             )) {
               // Update state from returned events
               if (streamEvent.type === "stream_start" && streamEvent.response) {
@@ -525,17 +681,31 @@ export class AnthropicAdapter implements ProviderAdapter {
 
   private buildRequestBody(request: Request): AnthropicRequest & { stream?: boolean } {
     const { system, messages } = convertMessagesToAnthropic(request.messages);
+    const oauth = this._isOAuth === true;
 
     const body: AnthropicRequest & { stream?: boolean } = {
       model: request.model,
-      messages,
+      messages: oauth ? this.renameToolCallsInMessages(messages) : messages,
       max_tokens: request.max_tokens ?? this._defaultMaxTokens,
     };
 
-    if (system) body.system = system;
+    // System prompt: for OAuth tokens, prepend Claude Code identity.
+    if (oauth) {
+      const systemBlocks: AnthropicContentBlock[] = [
+        { type: "text", text: CLAUDE_CODE_SYSTEM_PREFIX } as AnthropicTextBlock,
+      ];
+      if (system) {
+        systemBlocks.push({ type: "text", text: system } as AnthropicTextBlock);
+      }
+      body.system = systemBlocks;
+    } else if (system) {
+      body.system = system;
+    }
 
     if (request.tools && request.tools.length > 0) {
-      body.tools = convertToolDefs(request.tools);
+      body.tools = oauth
+        ? convertToolDefs(request.tools).map((t) => ({ ...t, name: toClaudeCodeName(t.name) }))
+        : convertToolDefs(request.tools);
       const tc = convertToolChoice(request.tool_choice);
       if (tc) body.tool_choice = tc;
     }
@@ -574,20 +744,56 @@ export class AnthropicAdapter implements ProviderAdapter {
     return body;
   }
 
+  /**
+   * In OAuth/stealth mode, rename tool_use and tool_result blocks in
+   * messages to use Claude Code canonical casing.
+   */
+  private renameToolCallsInMessages(messages: AnthropicMessage[]): AnthropicMessage[] {
+    return messages.map((msg) => {
+      if (!Array.isArray(msg.content)) return msg;
+      return {
+        ...msg,
+        content: (msg.content as AnthropicContentBlock[]).map((block) => {
+          if (block.type === "tool_use") {
+            return { ...block, name: toClaudeCodeName((block as AnthropicToolUseBlock).name) };
+          }
+          return block;
+        }),
+      };
+    });
+  }
+
   private async fetchRaw(
     path: string,
     body: unknown,
   ): Promise<globalThis.Response> {
     const url = `${this._baseUrl}${path}`;
+    const apiKey = this._apiKey!;
+    const oauth = this._isOAuth === true;
+
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      "anthropic-version": this._apiVersion,
+    };
+
+    if (oauth) {
+      // OAuth / Claude subscription: use Bearer auth + Claude Code stealth headers
+      headers["Authorization"] = `Bearer ${apiKey}`;
+      headers["anthropic-beta"] =
+        "claude-code-20250219,oauth-2025-04-20,fine-grained-tool-streaming-2025-05-14,interleaved-thinking-2025-05-14";
+      headers["user-agent"] = `claude-cli/${CLAUDE_CODE_VERSION} (external, cli)`;
+      headers["x-app"] = "cli";
+      headers["anthropic-dangerous-direct-browser-access"] = "true";
+      headers["accept"] = "application/json";
+    } else {
+      // Standard Console API key
+      headers["x-api-key"] = apiKey;
+    }
 
     try {
       return await fetch(url, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": this._apiKey,
-          "anthropic-version": this._apiVersion,
-        },
+        headers,
         body: JSON.stringify(body),
       });
     } catch (err) {
@@ -628,14 +834,33 @@ export class AnthropicAdapter implements ProviderAdapter {
     return parsed as AnthropicResponse;
   }
 
-  private convertResponse(raw: AnthropicResponse): Response {
+  private convertResponse(raw: AnthropicResponse, request?: Request): Response {
+    const oauth = this._isOAuth === true;
+    let content = convertAnthropicContent(raw.content);
+
+    // In OAuth mode, map Claude Code tool names back to caller's names
+    if (oauth && request?.tools) {
+      content = content.map((part) => {
+        if (part.kind === "tool_call" && part.tool_call) {
+          return {
+            ...part,
+            tool_call: {
+              ...part.tool_call,
+              name: fromClaudeCodeName(part.tool_call.name, request.tools),
+            },
+          };
+        }
+        return part;
+      });
+    }
+
     return {
       id: raw.id,
       model: raw.model,
       provider: "anthropic",
       message: {
         role: "assistant",
-        content: convertAnthropicContent(raw.content),
+        content,
       },
       finish_reason: mapStopReason(raw.stop_reason),
       usage: convertAnthropicUsage(raw.usage),
@@ -651,6 +876,7 @@ export class AnthropicAdapter implements ProviderAdapter {
       currentToolCall: { id: string; name: string; jsonChunks: string[] } | null;
       totalUsage: Usage;
     },
+    requestTools?: ToolDefinition[],
   ): Generator<StreamEvent> {
     switch (event.type) {
       case "message_start": {
@@ -677,11 +903,15 @@ export class AnthropicAdapter implements ProviderAdapter {
         } else if (block.type === "thinking") {
           yield { type: "reasoning_start" };
         } else if (block.type === "tool_use") {
+          // In OAuth mode, reverse-map Claude Code names back to caller's names
+          const toolName = this._isOAuth && requestTools
+            ? fromClaudeCodeName(block.name, requestTools)
+            : block.name;
           yield {
             type: "tool_call_start",
             tool_call: {
               id: block.id,
-              name: block.name,
+              name: toolName,
               arguments: {},
             },
           };
