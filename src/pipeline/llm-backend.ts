@@ -113,7 +113,17 @@ function buildContextSummary(context: Context): string {
     .map(([key, value]) => `  ${key}: ${String(value).slice(0, 200)}`)
     .join("\n");
 
-  return entries ? `Current pipeline context:\n${entries}` : "";
+  let summary = entries ? `Current pipeline context:\n${entries}` : "";
+
+  // If running in a workspace, add explicit instructions
+  const wsPath = context.getString("workspace.path");
+  if (wsPath) {
+    summary += `\n\nYou are working in an isolated jj workspace at: ${wsPath}\n` +
+      `All file operations and shell commands should use this directory as the working directory.\n` +
+      `Use jj (not git) for version control. Commit incrementally as you work.`;
+  }
+
+  return summary;
 }
 
 // ---------------------------------------------------------------------------

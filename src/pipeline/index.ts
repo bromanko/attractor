@@ -31,6 +31,13 @@ export {
   HandlerRegistry,
 } from "./handlers.js";
 
+// Workspace
+export {
+  WorkspaceCreateHandler, WorkspaceMergeHandler, WorkspaceCleanupHandler,
+  emergencyWorkspaceCleanup, WS_CONTEXT,
+} from "./workspace.js";
+export type { JjRunner } from "./workspace.js";
+
 // Engine
 export { runPipeline } from "./engine.js";
 export type { PipelineConfig, PipelineResult } from "./engine.js";

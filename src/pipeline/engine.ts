@@ -14,6 +14,8 @@ import { Context, SHAPE_TO_TYPE } from "./types.js";
 import { HandlerRegistry } from "./handlers.js";
 import { evaluateCondition } from "./conditions.js";
 import { findStartNode, findExitNodes, validateOrRaise } from "./validator.js";
+import { emergencyWorkspaceCleanup } from "./workspace.js";
+import type { JjRunner } from "./workspace.js";
 
 // ---------------------------------------------------------------------------
 // Edge selection algorithm (Section 3.3)
@@ -142,6 +144,13 @@ export type PipelineConfig = {
   interviewer?: Interviewer;
   checkpoint?: Checkpoint;
   onEvent?: (event: PipelineEvent) => void;
+  /**
+   * If true, automatically clean up any jj workspace created during this
+   * pipeline run when the pipeline fails. Defaults to true.
+   */
+  cleanupWorkspaceOnFailure?: boolean;
+  /** Custom jj runner for workspace operations (useful for testing). */
+  jjRunner?: JjRunner;
 };
 
 export type PipelineResult = {
@@ -176,6 +185,7 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
   const registry = new HandlerRegistry({
     backend: config.backend,
     interviewer: config.interviewer,
+    jjRunner: config.jjRunner,
   });
 
   const completedNodes: string[] = [];
@@ -209,6 +219,16 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
   await mkdir(logsRoot, { recursive: true });
   emit(config, "pipeline_started", { name: graph.name });
 
+  const shouldCleanupWorkspace = config.cleanupWorkspaceOnFailure !== false;
+
+  // Helper: clean up workspace on failure if one was created
+  async function cleanupOnFailure(result: PipelineResult): Promise<PipelineResult> {
+    if (result.status === "fail" && shouldCleanupWorkspace) {
+      await emergencyWorkspaceCleanup(context, config.jjRunner);
+    }
+    return result;
+  }
+
   // Main execution loop
   while (true) {
     const node = currentNode;
@@ -232,7 +252,7 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
           }
         }
         emit(config, "pipeline_failed", { error: `Goal gate unsatisfied: ${failedNode.id}` });
-        return { status: "fail", completedNodes, lastOutcome: nodeOutcomes.get(failedNode.id) };
+        return cleanupOnFailure({ status: "fail", completedNodes, lastOutcome: nodeOutcomes.get(failedNode.id) });
       }
 
       emit(config, "pipeline_completed", { duration: 0 });
@@ -334,7 +354,7 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
           }
         }
         emit(config, "pipeline_failed", { error: `Stage failed with no outgoing edge: ${node.id}` });
-        return { status: "fail", completedNodes, lastOutcome: outcome };
+        return cleanupOnFailure({ status: "fail", completedNodes, lastOutcome: outcome });
       }
       // No edge and not failed — pipeline ends
       break;
@@ -349,7 +369,7 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
     const nextNode = graph.nodes.find((n) => n.id === nextEdge.to);
     if (!nextNode) {
       emit(config, "pipeline_failed", { error: `Edge target "${nextEdge.to}" not found` });
-      return { status: "fail", completedNodes, lastOutcome: outcome };
+      return cleanupOnFailure({ status: "fail", completedNodes, lastOutcome: outcome });
     }
 
     currentNode = nextNode;

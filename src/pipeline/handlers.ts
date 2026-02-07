@@ -9,6 +9,13 @@ import {
   type Handler, type GraphNode, type Context, type Graph, type Outcome,
   type Interviewer, type CodergenBackend, type Option, type Question,
 } from "./types.js";
+import {
+  WorkspaceCreateHandler,
+  WorkspaceMergeHandler,
+  WorkspaceCleanupHandler,
+  WS_CONTEXT,
+  type JjRunner,
+} from "./workspace.js";
 
 // ---------------------------------------------------------------------------
 // Utility: write status file
@@ -194,15 +201,18 @@ export class ConditionalHandler implements Handler {
 // ---------------------------------------------------------------------------
 
 export class ToolHandler implements Handler {
-  async execute(node: GraphNode): Promise<Outcome> {
+  async execute(node: GraphNode, context: Context): Promise<Outcome> {
     const command = node.attrs.tool_command as string | undefined;
     if (!command) {
       return { status: "fail", failure_reason: "No tool_command specified" };
     }
 
+    // Use workspace path as cwd if a workspace is active
+    const cwd = context.getString(WS_CONTEXT.PATH) || undefined;
+
     const { exec } = await import("node:child_process");
     return new Promise((resolve) => {
-      exec(command, { timeout: 30_000 }, (error, stdout, stderr) => {
+      exec(command, { timeout: 30_000, cwd }, (error, stdout, stderr) => {
         if (error) {
           resolve({ status: "fail", failure_reason: String(error) });
         } else {
@@ -225,7 +235,7 @@ export class HandlerRegistry {
   private _handlers = new Map<string, Handler>();
   private _defaultHandler: Handler;
 
-  constructor(opts?: { backend?: CodergenBackend; interviewer?: Interviewer }) {
+  constructor(opts?: { backend?: CodergenBackend; interviewer?: Interviewer; jjRunner?: JjRunner }) {
     this._defaultHandler = new CodergenHandler(opts?.backend);
 
     this.register("start", new StartHandler());
@@ -233,6 +243,11 @@ export class HandlerRegistry {
     this.register("codergen", this._defaultHandler);
     this.register("conditional", new ConditionalHandler());
     this.register("tool", new ToolHandler());
+
+    // Workspace lifecycle handlers
+    this.register("workspace.create", new WorkspaceCreateHandler(opts?.jjRunner));
+    this.register("workspace.merge", new WorkspaceMergeHandler(opts?.jjRunner));
+    this.register("workspace.cleanup", new WorkspaceCleanupHandler(opts?.jjRunner));
 
     if (opts?.interviewer) {
       this.register("wait.human", new WaitForHumanHandler(opts.interviewer));
