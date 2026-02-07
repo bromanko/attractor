@@ -43,3 +43,7 @@ export {
 
 // Stylesheet
 export { applyStylesheet, parseStylesheet } from "./stylesheet.js";
+
+// LLM Backend
+export { LlmBackend } from "./llm-backend.js";
+export type { LlmBackendConfig } from "./llm-backend.js";
