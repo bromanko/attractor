@@ -28,3 +28,7 @@ export {
 
 // Truncation
 export { truncateToolOutput, truncateChars, truncateLines } from "./truncation.js";
+
+// Profiles
+export { AnthropicProfile } from "./profiles/index.js";
+export type { AnthropicProfileConfig } from "./profiles/index.js";
