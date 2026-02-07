@@ -31,3 +31,7 @@ export { retry } from "./retry.js";
 
 // Catalog
 export { MODEL_CATALOG, getModelInfo, listModels, getLatestModel } from "./catalog.js";
+
+// Providers
+export { AnthropicAdapter } from "./providers/index.js";
+export type { AnthropicConfig } from "./providers/index.js";
