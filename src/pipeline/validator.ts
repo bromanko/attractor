@@ -2,6 +2,9 @@
  * Validation and Linting — Section 7 of the Attractor Spec.
  */
 
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
+import { homedir } from "node:os";
 import type { Graph, Diagnostic, Severity } from "./types.js";
 import { SHAPE_TO_TYPE, KNOWN_HANDLER_TYPES } from "./types.js";
 import { parseCondition } from "./conditions.js";
@@ -179,6 +182,24 @@ export function validate(graph: Graph): Diagnostic[] {
         `Node "${node.id}" resolves to codergen handler but has no prompt or label.`,
         { node_id: node.id },
       ));
+    }
+  }
+
+  // prompt_file_exists
+  for (const node of graph.nodes) {
+    const raw = node.attrs.prompt_file as string | undefined;
+    if (!raw) continue;
+    const paths = raw.split(",").map((p) => p.trim()).filter(Boolean);
+    for (const p of paths) {
+      const abs = p.startsWith("~/") || p === "~"
+        ? resolve(homedir(), p.slice(2))
+        : resolve(p);
+      if (!existsSync(abs)) {
+        diagnostics.push(diag("prompt_file_exists", "warning",
+          `Node "${node.id}" references prompt_file "${p}" which does not exist (resolved: ${abs}).`,
+          { node_id: node.id, fix: `Create the file at ${abs} or fix the path` },
+        ));
+      }
     }
   }
 
