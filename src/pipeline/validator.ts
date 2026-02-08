@@ -3,7 +3,7 @@
  */
 
 import type { Graph, Diagnostic, Severity } from "./types.js";
-import { SHAPE_TO_TYPE } from "./types.js";
+import { SHAPE_TO_TYPE, KNOWN_HANDLER_TYPES } from "./types.js";
 import { parseCondition } from "./conditions.js";
 
 function diag(
@@ -129,8 +129,7 @@ export function validate(graph: Graph): Diagnostic[] {
   // type_known
   for (const node of graph.nodes) {
     if (node.attrs.type) {
-      const knownTypes = Object.values(SHAPE_TO_TYPE);
-      if (!knownTypes.includes(node.attrs.type)) {
+      if (!KNOWN_HANDLER_TYPES.has(node.attrs.type)) {
         diagnostics.push(diag("type_known", "warning", `Node "${node.id}" has unknown type "${node.attrs.type}".`, {
           node_id: node.id,
         }));

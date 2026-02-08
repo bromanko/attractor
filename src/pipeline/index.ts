@@ -13,7 +13,7 @@ export type {
   CodergenBackend,
 } from "./types.js";
 
-export { Context, SHAPE_TO_TYPE } from "./types.js";
+export { Context, SHAPE_TO_TYPE, KNOWN_HANDLER_TYPES } from "./types.js";
 
 // DOT Parser
 export { parseDot } from "./dot-parser.js";

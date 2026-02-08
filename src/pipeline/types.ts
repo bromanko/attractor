@@ -111,6 +111,17 @@ export const SHAPE_TO_TYPE: Record<string, string> = {
   house: "stack.manager_loop",
 };
 
+/**
+ * All handler type names the engine recognizes — includes shape-mapped types
+ * plus types registered directly by name (e.g. workspace handlers).
+ */
+export const KNOWN_HANDLER_TYPES: ReadonlySet<string> = new Set([
+  ...Object.values(SHAPE_TO_TYPE),
+  "workspace.create",
+  "workspace.merge",
+  "workspace.cleanup",
+]);
+
 // ---------------------------------------------------------------------------
 // Context (Section 5.1)
 // ---------------------------------------------------------------------------
