@@ -3,6 +3,9 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { LlmBackend } from "./llm-backend.js";
 import { Context } from "./types.js";
 import type { GraphNode } from "./types.js";
@@ -180,6 +183,138 @@ describe("LlmBackend", () => {
 
     expect(outcome.status).toBe("success");
     expect(outcome.notes).toBe("Custom: implement");
+  });
+
+  // -----------------------------------------------------------------------
+  // prompt_file tests
+  // -----------------------------------------------------------------------
+
+  it("loads a single prompt_file and prepends to prompt", async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), "pf-test-"));
+    try {
+      await writeFile(join(tmpDir, "review.md"), "# Review Checklist\n- Check types\n- Check tests");
+
+      const completeSpy = vi.fn().mockResolvedValue({
+        id: "resp_01",
+        model: "test",
+        provider: "mock",
+        message: { role: "assistant", content: [{ kind: "text", text: "ok" }] },
+        finish_reason: { reason: "stop" },
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      });
+
+      const client = new Client({
+        providers: {
+          mock: { name: "mock", complete: completeSpy, async *stream() {} },
+        },
+      });
+
+      const backend = new LlmBackend({ client, model: "test" });
+      const node = makeNode({
+        attrs: {
+          label: "Review",
+          prompt_file: join(tmpDir, "review.md"),
+        },
+      });
+
+      await backend.run(node, "Review the code", new Context());
+
+      const request = completeSpy.mock.calls[0][0];
+      const userMsg = request.messages.find((m: any) => m.role === "user");
+      const text = userMsg.content[0].text;
+
+      // File content should appear before the inline prompt
+      expect(text).toContain("# Review Checklist");
+      expect(text).toContain("Check types");
+      expect(text).toContain("Review the code");
+      expect(text.indexOf("Review Checklist")).toBeLessThan(text.indexOf("Review the code"));
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("loads multiple comma-separated prompt_files in order", async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), "pf-test-"));
+    try {
+      await writeFile(join(tmpDir, "code.md"), "CODE REVIEW INSTRUCTIONS");
+      await writeFile(join(tmpDir, "security.md"), "SECURITY REVIEW INSTRUCTIONS");
+
+      const completeSpy = vi.fn().mockResolvedValue({
+        id: "resp_01",
+        model: "test",
+        provider: "mock",
+        message: { role: "assistant", content: [{ kind: "text", text: "ok" }] },
+        finish_reason: { reason: "stop" },
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      });
+
+      const client = new Client({
+        providers: {
+          mock: { name: "mock", complete: completeSpy, async *stream() {} },
+        },
+      });
+
+      const backend = new LlmBackend({ client, model: "test" });
+      const node = makeNode({
+        attrs: {
+          label: "Review",
+          prompt_file: `${join(tmpDir, "code.md")}, ${join(tmpDir, "security.md")}`,
+        },
+      });
+
+      await backend.run(node, "Review changes", new Context());
+
+      const request = completeSpy.mock.calls[0][0];
+      const text = request.messages.find((m: any) => m.role === "user").content[0].text;
+
+      // Both files present, in order, before inline prompt
+      expect(text).toContain("CODE REVIEW INSTRUCTIONS");
+      expect(text).toContain("SECURITY REVIEW INSTRUCTIONS");
+      expect(text).toContain("Review changes");
+      expect(text.indexOf("CODE REVIEW")).toBeLessThan(text.indexOf("SECURITY REVIEW"));
+      expect(text.indexOf("SECURITY REVIEW")).toBeLessThan(text.indexOf("Review changes"));
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("throws when prompt_file does not exist", async () => {
+    const client = new Client({
+      providers: { mock: mockAdapter("ok") },
+    });
+
+    const backend = new LlmBackend({ client, model: "test" });
+    const node = makeNode({
+      attrs: { label: "Review", prompt_file: "/nonexistent/file.md" },
+    });
+
+    await expect(backend.run(node, "Review", new Context())).rejects.toThrow(
+      /Failed to read prompt_file/,
+    );
+  });
+
+  it("works normally when no prompt_file attribute is set", async () => {
+    const completeSpy = vi.fn().mockResolvedValue({
+      id: "resp_01",
+      model: "test",
+      provider: "mock",
+      message: { role: "assistant", content: [{ kind: "text", text: "ok" }] },
+      finish_reason: { reason: "stop" },
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    });
+
+    const client = new Client({
+      providers: {
+        mock: { name: "mock", complete: completeSpy, async *stream() {} },
+      },
+    });
+
+    const backend = new LlmBackend({ client, model: "test" });
+    await backend.run(makeNode(), "Just a prompt", new Context());
+
+    const request = completeSpy.mock.calls[0][0];
+    const text = request.messages.find((m: any) => m.role === "user").content[0].text;
+    expect(text).toContain("Just a prompt");
   });
 
   it("passes system prompt when configured", async () => {
