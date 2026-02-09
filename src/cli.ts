@@ -219,18 +219,18 @@ async function cmdRun(
       : join(resolve(logsRoot), "checkpoint.json");
 
     if (!existsSync(cpPath)) {
-      console.error(`Checkpoint not found: ${cpPath}`);
-      process.exit(1);
-    }
-
-    try {
-      checkpoint = JSON.parse(await readFile(cpPath, "utf-8")) as Checkpoint;
-      console.log(`  ♻️  Resuming from: ${checkpoint.current_node}`);
-      console.log(`  ✓  Previously completed: ${checkpoint.completed_nodes.join(" → ")}`);
+      console.log(`  ℹ️  No checkpoint found, starting fresh.`);
       console.log();
-    } catch (err) {
-      console.error(`Error reading checkpoint: ${err}`);
-      process.exit(1);
+    } else {
+      try {
+        checkpoint = JSON.parse(await readFile(cpPath, "utf-8")) as Checkpoint;
+        console.log(`  ♻️  Resuming from: ${checkpoint.current_node}`);
+        console.log(`  ✓  Previously completed: ${checkpoint.completed_nodes.join(" → ")}`);
+        console.log();
+      } catch (err) {
+        console.error(`Error reading checkpoint: ${err}`);
+        process.exit(1);
+      }
     }
   }
 
