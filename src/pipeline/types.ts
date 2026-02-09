@@ -177,6 +177,8 @@ export class Context {
 export type Checkpoint = {
   timestamp: string;
   current_node: string;
+  /** If set, resume execution at this node instead of current_node. */
+  resume_at?: string;
   completed_nodes: string[];
   node_retries: Record<string, number>;
   context_values: Record<string, unknown>;
@@ -189,6 +191,7 @@ export type Checkpoint = {
 
 export type PipelineEventKind =
   | "pipeline_started"
+  | "pipeline_resumed"
   | "pipeline_completed"
   | "pipeline_failed"
   | "stage_started"

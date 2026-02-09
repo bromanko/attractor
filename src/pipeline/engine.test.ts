@@ -299,4 +299,105 @@ describe("Pipeline Engine", () => {
     expect(result.status).toBe("success");
     expect(result.completedNodes.length).toBe(12); // start + 10 nodes + exit
   });
+
+  it("stops pipeline when non-routing node fails with no failure edge", async () => {
+    const graph = parseDot(`
+      digraph G {
+        start [shape=Mdiamond]
+        exit  [shape=Msquare]
+        setup [shape=box]
+        work  [shape=box]
+        start -> setup
+        setup -> work
+        work  -> exit
+      }
+    `);
+
+    const failOnSetup: CodergenBackend = {
+      async run(node) {
+        if (node.id === "setup") return { status: "fail", failure_reason: "setup exploded" } as Outcome;
+        return `Done: ${node.id}`;
+      },
+    };
+
+    const events: PipelineEvent[] = [];
+    const logsRoot = await tempDir();
+    const result = await runPipeline({
+      graph, logsRoot, backend: failOnSetup,
+      onEvent: (e) => events.push(e),
+    });
+
+    expect(result.status).toBe("fail");
+    // Pipeline should stop at setup, not continue to work
+    expect(result.completedNodes).toContain("setup");
+    expect(result.completedNodes).not.toContain("work");
+    expect(events.some(e => e.kind === "pipeline_failed")).toBe(true);
+  });
+
+  it("follows explicit failure edge when node fails", async () => {
+    const graph = parseDot(`
+      digraph G {
+        start   [shape=Mdiamond]
+        exit    [shape=Msquare]
+        build   [shape=box]
+        fix     [shape=box]
+        start   -> build
+        build   -> exit  [label="Pass", condition="outcome=success"]
+        build   -> fix   [label="Fail", condition="outcome!=success"]
+        fix     -> exit
+      }
+    `);
+
+    const failOnBuild: CodergenBackend = {
+      async run(node) {
+        if (node.id === "build") return { status: "fail", failure_reason: "build broke" } as Outcome;
+        return `Done: ${node.id}`;
+      },
+    };
+
+    const logsRoot = await tempDir();
+    const result = await runPipeline({ graph, logsRoot, backend: failOnBuild });
+
+    expect(result.status).toBe("success");
+    expect(result.completedNodes).toContain("build");
+    expect(result.completedNodes).toContain("fix");
+    expect(result.completedNodes).toContain("exit");
+  });
+
+  it("forwards failure through unconditional edge to conditional gate", async () => {
+    // Pattern: review → gate (diamond) → implement | revise
+    // When review returns fail, the unconditional edge to the gate should
+    // still be followed because the gate routes based on outcome.
+    const graph = parseDot(`
+      digraph G {
+        start   [shape=Mdiamond]
+        exit    [shape=Msquare]
+        review  [shape=box]
+        gate    [shape=diamond]
+        good    [shape=box]
+        revise  [shape=box]
+        start   -> review
+        review  -> gate
+        gate    -> good   [label="Pass", condition="outcome=success"]
+        gate    -> revise [label="Fail", condition="outcome!=success"]
+        revise  -> exit
+      }
+    `);
+
+    const failOnReview: CodergenBackend = {
+      async run(node) {
+        if (node.id === "review") return { status: "fail", failure_reason: "needs work" } as Outcome;
+        return `Done: ${node.id}`;
+      },
+    };
+
+    const logsRoot = await tempDir();
+    const result = await runPipeline({ graph, logsRoot, backend: failOnReview });
+
+    expect(result.status).toBe("success");
+    expect(result.completedNodes).toContain("review");
+    expect(result.completedNodes).toContain("gate");
+    expect(result.completedNodes).toContain("revise");
+    expect(result.completedNodes).not.toContain("good");
+  });
 });

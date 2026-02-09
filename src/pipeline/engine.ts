@@ -3,6 +3,7 @@
  * Core execution loop: traverse the graph, execute handlers, select edges.
  */
 
+import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type {
@@ -38,6 +39,55 @@ function bestByWeightThenLexical(edges: GraphEdge[]): GraphEdge | undefined {
     if (wb !== wa) return wb - wa; // Higher weight first
     return a.to.localeCompare(b.to); // Lexical tiebreak
   })[0];
+}
+
+/**
+ * Like selectEdge but restricts which edges are followed on failure.
+ * Allows:
+ *  1. Edges with conditions that match (explicit failure handling)
+ *  2. Edges whose target is a conditional/routing gate (diamond) — the gate
+ *     is designed to route based on the outcome, so forwarding fail is correct
+ *     (e.g. plan_review → plan_gate)
+ *  3. Edges suggested by the handler via suggested_next_ids
+ *
+ * Does NOT allow unconditional edges to regular execution nodes — that would
+ * silently swallow errors (e.g. ws_create failing then continuing to plan).
+ */
+function selectFailureEdge(
+  node: GraphNode,
+  outcome: Outcome,
+  context: ContextType,
+  graph: Graph,
+): GraphEdge | undefined {
+  const edges = graph.edges.filter((e) => e.from === node.id);
+  if (edges.length === 0) return undefined;
+
+  // 1. Edges with conditions that match
+  for (const edge of edges) {
+    if (edge.attrs.condition && evaluateCondition(edge.attrs.condition, outcome, context)) {
+      return edge;
+    }
+  }
+
+  // 2. Unconditional edges to conditional/routing gates
+  for (const edge of edges) {
+    if (!edge.attrs.condition) {
+      const targetNode = graph.nodes.find((n) => n.id === edge.to);
+      if (targetNode && (targetNode.attrs.shape === "diamond" || targetNode.attrs.type === "conditional")) {
+        return edge;
+      }
+    }
+  }
+
+  // 3. Handler-suggested targets
+  if (outcome.suggested_next_ids && outcome.suggested_next_ids.length > 0) {
+    for (const suggestedId of outcome.suggested_next_ids) {
+      const edge = edges.find((e) => e.to === suggestedId);
+      if (edge) return edge;
+    }
+  }
+
+  return undefined;
 }
 
 function selectEdge(
@@ -202,18 +252,62 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
   // Resume from checkpoint
   const cp = config.checkpoint;
   if (cp) {
-    completedNodes.push(...cp.completed_nodes);
+    // Restore context and retry counts
     context.applyUpdates(cp.context_values);
     for (const [id, count] of Object.entries(cp.node_retries)) {
       nodeRetries.set(id, count);
     }
-    const resumeNode = graph.nodes.find((n) => n.id === cp.current_node);
+
+    // Resume at the node specified by resume_at (if set), otherwise re-run
+    // the last completed node (which was the one that failed).
+    const resumeId = cp.resume_at ?? cp.current_node;
+    const resumeNode = graph.nodes.find((n) => n.id === resumeId);
     if (resumeNode) {
-      const lastEdge = graph.edges.find((e) => e.from === cp.current_node);
-      if (lastEdge) {
-        currentNode = graph.nodes.find((n) => n.id === lastEdge.to) ?? currentNode;
+      currentNode = resumeNode;
+      // Mark everything before the resume node as completed (but not the
+      // resume node itself — it will be re-executed).
+      const idx = cp.completed_nodes.indexOf(resumeId);
+      const alreadyDone = idx >= 0
+        ? cp.completed_nodes.slice(0, idx)
+        : cp.completed_nodes;
+      completedNodes.push(...alreadyDone);
+    }
+
+    // Recover workspace if it was cleaned up on the previous failure
+    const wsPath = context.getString("workspace.path");
+    const wsName = context.getString("workspace.name");
+    if (wsPath && wsName && !existsSync(wsPath)) {
+      try {
+        const quietExec = async (args: string[], cwd?: string) => {
+          if (config.jjRunner) return config.jjRunner(args);
+          const { execFileSync } = await import("node:child_process");
+          return execFileSync("jj", args, {
+            encoding: "utf-8",
+            cwd: cwd ?? undefined,
+            stdio: ["pipe", "pipe", "pipe"],
+          }).trim();
+        };
+
+        // Forget the old workspace registration if it still exists in jj
+        try { await quietExec(["workspace", "forget", wsName]); } catch { /* ignore */ }
+
+        await quietExec(["workspace", "add", "--name", wsName, wsPath]);
+
+        // Restore to the tip commit from before the failure
+        const tipCommit = context.getString("workspace.tip_commit");
+        if (tipCommit) {
+          await quietExec(["edit", tipCommit], wsPath);
+          emit(config, "stage_completed", { name: `ws_recover(${wsName}@${tipCommit})` });
+        } else {
+          emit(config, "stage_completed", { name: `ws_recover(${wsName})` });
+        }
+      } catch (err) {
+        emit(config, "pipeline_failed", { error: `Failed to recover workspace "${wsName}": ${err}` });
+        return { status: "fail", completedNodes, lastOutcome: { status: "fail", failure_reason: String(err) } };
       }
     }
+
+    emit(config, "pipeline_resumed", { from: currentNode.id });
   }
 
   await mkdir(logsRoot, { recursive: true });
@@ -321,10 +415,34 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
       context.set("preferred_label", outcome.preferred_label);
     }
 
-    if (outcome.status === "success" || outcome.status === "partial_success") {
+    // Conditional (diamond) nodes are routing gates — they forward the upstream
+    // outcome for edge selection but don't fail themselves. Always show completed.
+    const isConditional =
+      node.attrs.shape === "diamond" || node.attrs.type === "conditional";
+
+    if (isConditional || outcome.status === "success" || outcome.status === "partial_success") {
       emit(config, "stage_completed", { name: node.id, index: completedNodes.length - 1 });
     } else {
       emit(config, "stage_failed", { name: node.id, error: outcome.failure_reason });
+    }
+
+    // Capture workspace tip commit for checkpoint recovery
+    const wsPathForTip = context.getString("workspace.path");
+    if (wsPathForTip && existsSync(wsPathForTip)) {
+      try {
+        const tipJj = config.jjRunner ?? (async (args: string[]) => {
+          const { execFileSync } = await import("node:child_process");
+          return execFileSync("jj", args, {
+            cwd: wsPathForTip,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+          }).trim();
+        });
+        const tip = await tipJj(["log", "-r", "@", "--no-graph", "-T", "commit_id.short(8)", "--limit", "1"]);
+        context.set("workspace.tip_commit", tip);
+      } catch {
+        // Non-fatal — just means we can't restore the exact commit on resume
+      }
     }
 
     // Save checkpoint
@@ -340,10 +458,19 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
     emit(config, "checkpoint_saved", { node_id: node.id });
 
     // Select next edge (Section 3.3)
-    const nextEdge = selectEdge(node, outcome, context, graph);
+    // On failure, non-routing nodes should only continue if there's an
+    // explicit failure-handling edge (condition match, or unconditional edge
+    // leading to a conditional/routing gate that will handle the outcome).
+    // Unconditional edges to regular execution nodes should NOT be followed
+    // on failure — that would silently swallow errors like workspace creation
+    // failures.
+    const isFailed = outcome.status === "fail" || outcome.status === "retry";
+    const nextEdge = isFailed && !isConditional
+      ? selectFailureEdge(node, outcome, context, graph)
+      : selectEdge(node, outcome, context, graph);
 
     if (!nextEdge) {
-      if (outcome.status === "fail") {
+      if (isFailed) {
         // Check for retry_target (Section 3.7)
         const retryTarget = node.attrs.retry_target || node.attrs.fallback_retry_target;
         if (retryTarget) {
