@@ -9,10 +9,15 @@
  */
 
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
-import { parseDot, validate, validateOrRaise, runPipeline, LlmBackend } from "./pipeline/index.js";
-import type { PipelineEvent, Diagnostic, CodergenBackend } from "./pipeline/index.js";
-import { Client, AnthropicAdapter, listModels } from "./llm/index.js";
+import { resolve, join } from "node:path";
+import { existsSync } from "node:fs";
+import { parseDot, validate, validateOrRaise, runPipeline, PiBackend, AutoApproveInterviewer } from "./pipeline/index.js";
+import type { PipelineEvent, Diagnostic, CodergenBackend, ToolMode, Interviewer, Checkpoint } from "./pipeline/index.js";
+import {
+  AuthStorage,
+  ModelRegistry,
+} from "@mariozechner/pi-coding-agent";
+import { InteractiveInterviewer } from "./interactive-interviewer.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -28,23 +33,20 @@ Usage:
   attractor list-models [--provider name]  Show available models
 
 Run options:
+  --goal <text>          Override the graph's goal attribute
   --model <model>        LLM model to use (default: claude-sonnet-4-5)
   --provider <name>      Provider name (default: anthropic)
   --logs <dir>           Logs directory (default: .attractor/logs)
   --system <prompt>      System prompt for codergen stages
-  --temperature <n>      Temperature 0-1 (default: provider default)
-  --max-tokens <n>       Max response tokens (default: 8192)
+  --tools <mode>         Tool mode: none | read-only | coding (default: coding)
+  --approve-all          Auto-approve all human gates (no interactive prompts)
+  --resume [checkpoint]  Resume from checkpoint (default: <logs>/checkpoint.json)
   --dry-run              Validate and print graph without executing
   --verbose              Show detailed event output
 
-Environment:
-  ANTHROPIC_API_KEY      API key for Anthropic provider
-  ANTHROPIC_BASE_URL     Custom base URL for Anthropic API
-
 Auth:
-  If no ANTHROPIC_API_KEY is set, attractor reads ~/.pi/agent/auth.json
-  for credentials stored by pi's /login command. This enables using a
-  Claude Pro/Max subscription instead of a Console API key.
+  Uses pi's AuthStorage for credentials. Set ANTHROPIC_API_KEY in env,
+  or use \`pi /login\` to authenticate with a Claude subscription.
 `.trim());
   process.exit(1);
 }
@@ -107,7 +109,6 @@ async function cmdValidate(filePath: string): Promise<void> {
   const dot = await readFile(resolve(filePath), "utf-8");
   const graph = parseDot(dot);
   const diagnostics = validate(graph);
-
   const errors = diagnostics.filter((d) => d.severity === "error");
   const warnings = diagnostics.filter((d) => d.severity === "warning");
 
@@ -139,6 +140,12 @@ async function cmdRun(
 ): Promise<void> {
   const dot = await readFile(resolve(filePath), "utf-8");
   const graph = parseDot(dot);
+
+  // Apply --goal override before validation
+  if (args.goal && typeof args.goal === "string") {
+    graph.attrs.goal = args.goal;
+  }
+
   validateOrRaise(graph);
 
   const modelName = (args.model as string) ?? "claude-sonnet-4-5";
@@ -146,6 +153,7 @@ async function cmdRun(
   const logsRoot = (args.logs as string) ?? ".attractor/logs";
   const verbose = args.verbose === true;
   const dryRun = args["dry-run"] === true;
+  const toolMode = ((args.tools as string) ?? "coding") as ToolMode;
 
   if (dryRun) {
     console.log(`Graph: ${graph.name}`);
@@ -169,29 +177,62 @@ async function cmdRun(
     return;
   }
 
-  // Build LLM client
+  // Build interviewer
+  const approveAll = args["approve-all"] === true;
+  const interviewer: Interviewer = approveAll
+    ? new AutoApproveInterviewer()
+    : new InteractiveInterviewer();
+
+  // Build pi SDK backend
   let backend: CodergenBackend;
   try {
-    const client = buildClient(providerName);
-    backend = new LlmBackend({
-      client,
+    const authStorage = new AuthStorage();
+    const modelRegistry = new ModelRegistry(authStorage);
+
+    backend = new PiBackend({
       model: modelName,
       provider: providerName,
+      cwd: process.cwd(),
       systemPrompt: args.system as string | undefined,
-      maxTokens: args["max-tokens"] ? parseInt(args["max-tokens"] as string, 10) : undefined,
-      temperature: args.temperature ? parseFloat(args.temperature as string) : undefined,
+      toolMode,
+      authStorage,
+      modelRegistry,
     });
   } catch (err) {
-    console.error(`Error configuring LLM: ${err}`);
+    console.error(`Error configuring backend: ${err}`);
     process.exit(1);
   }
 
   console.log(`┌─ Attractor Pipeline ─────────────────────────────┐`);
   console.log(`│  ${(graph.attrs.goal ?? graph.name).slice(0, 48).padEnd(48)} │`);
   console.log(`│  Model: ${modelName.padEnd(39)} │`);
+  console.log(`│  Tools: ${toolMode.padEnd(39)} │`);
   console.log(`│  Nodes: ${String(graph.nodes.length).padEnd(39)} │`);
   console.log(`└──────────────────────────────────────────────────┘`);
   console.log();
+
+  // Load checkpoint for --resume
+  let checkpoint: Checkpoint | undefined;
+  if (args.resume !== undefined) {
+    const cpPath = typeof args.resume === "string"
+      ? resolve(args.resume)
+      : join(resolve(logsRoot), "checkpoint.json");
+
+    if (!existsSync(cpPath)) {
+      console.error(`Checkpoint not found: ${cpPath}`);
+      process.exit(1);
+    }
+
+    try {
+      checkpoint = JSON.parse(await readFile(cpPath, "utf-8")) as Checkpoint;
+      console.log(`  ♻️  Resuming from: ${checkpoint.current_node}`);
+      console.log(`  ✓  Previously completed: ${checkpoint.completed_nodes.join(" → ")}`);
+      console.log();
+    } catch (err) {
+      console.error(`Error reading checkpoint: ${err}`);
+      process.exit(1);
+    }
+  }
 
   const startTime = Date.now();
 
@@ -199,6 +240,8 @@ async function cmdRun(
     graph,
     logsRoot,
     backend,
+    interviewer,
+    checkpoint,
     onEvent(event: PipelineEvent) {
       const d = event.data as Record<string, unknown>;
       if (verbose) {
@@ -209,6 +252,9 @@ async function cmdRun(
         switch (event.kind) {
           case "pipeline_started":
             console.log("  🚀 Pipeline started\n");
+            break;
+          case "pipeline_resumed":
+            console.log(`  ♻️  Resuming at: ${d.from}\n`);
             break;
           case "stage_started":
             process.stdout.write(
@@ -241,50 +287,30 @@ async function cmdRun(
 }
 
 function cmdListModels(args: Record<string, string | boolean>): void {
-  const provider = args.provider as string | undefined;
-  const models = listModels(provider);
+  const providerFilter = args.provider as string | undefined;
 
-  if (models.length === 0) {
-    console.log(provider ? `No models found for provider "${provider}".` : "No models in catalog.");
+  const authStorage = new AuthStorage();
+  const modelRegistry = new ModelRegistry(authStorage);
+  const models = modelRegistry.getAvailable();
+
+  const filtered = providerFilter
+    ? models.filter((m) => m.provider === providerFilter)
+    : models;
+
+  if (filtered.length === 0) {
+    console.log(providerFilter
+      ? `No authenticated models found for provider "${providerFilter}".`
+      : "No authenticated models found. Run \`pi /login\` or set API key env vars.");
     return;
   }
 
-  console.log(
-    `${"Model".padEnd(30)} ${"Provider".padEnd(12)} ${"Context".padEnd(10)} Tools  Vision Reasoning`,
-  );
-  console.log("─".repeat(90));
-  for (const m of models) {
+  console.log(`${"Model".padEnd(30)} ${"Provider".padEnd(12)} ${"Context".padEnd(10)} Reasoning`);
+  console.log("─".repeat(65));
+  for (const m of filtered) {
     console.log(
-      `${m.id.padEnd(30)} ${m.provider.padEnd(12)} ${String(m.context_window).padEnd(10)} ${yn(m.supports_tools)}     ${yn(m.supports_vision)}  ${yn(m.supports_reasoning)}`,
+      `${m.id.padEnd(30)} ${String(m.provider).padEnd(12)} ${String(m.contextWindow).padEnd(10)} ${m.reasoning ? "✓" : "·"}`,
     );
   }
-}
-
-function yn(v: boolean): string {
-  return v ? "✓" : "·";
-}
-
-// ---------------------------------------------------------------------------
-// Provider factory
-// ---------------------------------------------------------------------------
-
-function buildClient(providerName: string): Client {
-  const providers: Record<string, () => import("./llm/types.js").ProviderAdapter> = {
-    anthropic: () => new AnthropicAdapter(),
-  };
-
-  const factory = providers[providerName];
-  if (!factory) {
-    const available = Object.keys(providers).join(", ");
-    throw new Error(
-      `Unknown provider "${providerName}". Available: ${available}`,
-    );
-  }
-
-  return new Client({
-    providers: { [providerName]: factory() },
-    default_provider: providerName,
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -303,7 +329,6 @@ async function main(): Promise<void> {
       await cmdRun(args._file as string, args);
       break;
     }
-
     case "validate": {
       if (!args._file) {
         console.error("Error: validate requires a .dot file path");
@@ -312,12 +337,10 @@ async function main(): Promise<void> {
       await cmdValidate(args._file as string);
       break;
     }
-
     case "list-models": {
       cmdListModels(args);
       break;
     }
-
     default:
       usage();
   }

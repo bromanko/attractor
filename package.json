@@ -30,6 +30,10 @@
     "clean": "rm -rf dist"
   },
   "license": "Apache-2.0",
+  "dependencies": {
+    "@mariozechner/pi-coding-agent": "0.52.6",
+    "@mariozechner/pi-ai": "0.52.6"
+  },
   "devDependencies": {
     "typescript": "^5.7.0",
     "vitest": "^3.0.0",

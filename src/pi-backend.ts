@@ -1,0 +1,409 @@
+/**
+ * PiBackend — CodergenBackend implementation powered by the pi SDK.
+ *
+ * Replaces the old LlmBackend, delegating all LLM interaction to
+ * pi's AgentSession (createAgentSession).
+ */
+
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import { homedir } from "node:os";
+
+import {
+  createAgentSession,
+  type CreateAgentSessionOptions,
+  type CreateAgentSessionResult,
+  AuthStorage,
+  ModelRegistry,
+  SessionManager,
+  SettingsManager,
+  DefaultResourceLoader,
+  codingTools,
+  readOnlyTools,
+  type AgentSessionEvent,
+} from "@mariozechner/pi-coding-agent";
+
+import type { Model, Api } from "@mariozechner/pi-ai";
+import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
+
+import type { CodergenBackend, GraphNode, Outcome } from "./pipeline/types.js";
+import { Context } from "./pipeline/types.js";
+
+// ---------------------------------------------------------------------------
+// Valid thinking levels
+// ---------------------------------------------------------------------------
+
+const VALID_THINKING_LEVELS = new Set<ThinkingLevel>([
+  "off", "minimal", "low", "medium", "high", "xhigh",
+]);
+
+// ---------------------------------------------------------------------------
+// Tool mode
+// ---------------------------------------------------------------------------
+
+export type ToolMode = "none" | "read-only" | "coding";
+
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+
+export type PiBackendConfig = {
+  /** Default model ID for codergen nodes (can be overridden per-node via llm_model attr). */
+  model: string;
+
+  /** Default provider name (can be overridden per-node via llm_provider attr). */
+  provider: string;
+
+  /** Working directory for agent sessions. */
+  cwd: string;
+
+  /** System prompt prepended to every codergen call. */
+  systemPrompt?: string;
+
+  /** Auth storage for credentials. */
+  authStorage?: AuthStorage;
+
+  /** Model registry for model resolution. */
+  modelRegistry?: ModelRegistry;
+
+  /**
+   * Callback for streaming agent events per node.
+   * Receives the executing node's ID and each pi agent session event.
+   */
+  onStageEvent?: (nodeId: string, event: AgentSessionEvent) => void;
+
+  /**
+   * Custom outcome parser. Given the raw LLM text response and context,
+   * produce an Outcome. If not provided, the default marker-based parser is used.
+   */
+  parseOutcome?: (text: string, node: GraphNode, context: Context) => Outcome;
+
+  /**
+   * Tool mode controlling which tools are available to the agent.
+   * - "none"      — no tools
+   * - "read-only" — read, grep, find, ls
+   * - "coding"    — read, bash, edit, write (default)
+   */
+  toolMode?: ToolMode;
+
+  /**
+   * @internal — override for testing. Replaces createAgentSession().
+   */
+  _sessionFactory?: (opts: CreateAgentSessionOptions) => Promise<CreateAgentSessionResult>;
+};
+
+// ---------------------------------------------------------------------------
+// Default outcome parser (marker protocol)
+// ---------------------------------------------------------------------------
+
+/**
+ * Default parser: looks for structured signals in the LLM response text.
+ * Supports:
+ *   - `[STATUS: fail]` or `[STATUS: success]` markers
+ *   - `[PREFERRED_LABEL: ...]` for edge routing
+ *   - `[NEXT: node_id]` for suggested next nodes
+ *   - `[FAILURE_REASON: ...]` for failure descriptions
+ *
+ * Falls back to "success" if no markers found.
+ */
+export function defaultParseOutcome(
+  text: string,
+  node: GraphNode,
+  _context: Context,
+): Outcome {
+  const outcome: Outcome = {
+    status: "success",
+    notes: text.slice(0, 500),
+    context_updates: {
+      [`${node.id}.response`]: text.slice(0, 2000),
+    },
+  };
+
+  // Status marker
+  const statusMatch = text.match(
+    /\[STATUS:\s*(success|fail|partial_success|retry)\]/i,
+  );
+  if (statusMatch) {
+    outcome.status = statusMatch[1].toLowerCase() as Outcome["status"];
+  }
+
+  // Preferred label
+  const labelMatch = text.match(/\[PREFERRED_LABEL:\s*(.+?)\]/i);
+  if (labelMatch) {
+    outcome.preferred_label = labelMatch[1].trim();
+  }
+
+  // Suggested next IDs
+  const nextMatches = [...text.matchAll(/\[NEXT:\s*(\w+)\]/gi)];
+  if (nextMatches.length > 0) {
+    outcome.suggested_next_ids = nextMatches.map((m) => m[1]);
+  }
+
+  // Failure reason
+  const failMatch = text.match(/\[FAILURE_REASON:\s*(.+?)\]/i);
+  if (failMatch) {
+    outcome.failure_reason = failMatch[1].trim();
+  } else if (outcome.status === "fail") {
+    outcome.failure_reason = text.slice(0, 200);
+  }
+
+  return outcome;
+}
+
+// ---------------------------------------------------------------------------
+// Context summary builder
+// ---------------------------------------------------------------------------
+
+export function buildContextSummary(context: Context): string {
+  const snapshot = context.snapshot();
+
+  // Keys containing responses or feedback get generous room so downstream
+  // stages can act on detailed upstream feedback.  Everything else (usage
+  // stats, short metadata) gets a compact limit.
+  const isVerboseKey = (key: string) =>
+    key.endsWith(".response") || key.includes("feedback") || key === "graph.goal";
+
+  const entries = Object.entries(snapshot)
+    .filter(([key]) => !key.startsWith("_"))
+    .map(([key, value]) => {
+      const limit = isVerboseKey(key) ? 4000 : 200;
+      const text = String(value);
+      const display = text.length > limit ? text.slice(0, limit) + "…" : text;
+      return `  ${key}: ${display}`;
+    })
+    .join("\n");
+
+  let summary = entries ? `Current pipeline context:\n${entries}` : "";
+
+  // If running in a workspace, add explicit instructions
+  const wsPath = context.getString("workspace.path");
+  if (wsPath) {
+    summary +=
+      `\n\nYou are working in an isolated jj workspace at: ${wsPath}\n` +
+      `All file operations and shell commands should use this directory as the working directory.\n` +
+      `Use jj (not git) for version control. Commit incrementally as you work.`;
+  }
+
+  return summary;
+}
+
+// ---------------------------------------------------------------------------
+// Prompt file loading
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve a path that may start with `~` to an absolute path.
+ */
+export function expandPath(p: string): string {
+  if (p.startsWith("~/") || p === "~") {
+    return resolve(homedir(), p.slice(2));
+  }
+  return resolve(p);
+}
+
+/**
+ * Load and concatenate prompt files referenced by a node's `prompt_file`
+ * attribute. Files are comma-separated and joined with `\n\n---\n\n`.
+ *
+ * Returns empty string if no prompt_file attribute is set.
+ */
+export async function loadPromptFiles(node: GraphNode): Promise<string> {
+  const raw = node.attrs.prompt_file as string | undefined;
+  if (!raw) return "";
+
+  const paths = raw
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean);
+
+  const sections: string[] = [];
+  for (const p of paths) {
+    const abs = expandPath(p);
+    try {
+      const content = await readFile(abs, "utf-8");
+      sections.push(content.trim());
+    } catch (err) {
+      throw new Error(
+        `Failed to read prompt_file "${p}" (resolved to ${abs}): ${err}`,
+      );
+    }
+  }
+
+  return sections.join("\n\n---\n\n");
+}
+
+// ---------------------------------------------------------------------------
+// Implementation
+// ---------------------------------------------------------------------------
+
+export class PiBackend implements CodergenBackend {
+  private _config: PiBackendConfig;
+
+  constructor(config: PiBackendConfig) {
+    this._config = config;
+  }
+
+  async run(
+    node: GraphNode,
+    prompt: string,
+    context: Context,
+  ): Promise<Outcome> {
+    // -- 2.1 Model resolution -------------------------------------------
+    const provider =
+      (node.attrs.llm_provider as string) ?? this._config.provider;
+    const modelId =
+      (node.attrs.llm_model as string) ?? this._config.model;
+
+    let model: Model<Api> | undefined;
+
+    // Try ModelRegistry first
+    if (this._config.modelRegistry) {
+      model = this._config.modelRegistry.find(provider, modelId);
+    }
+
+    if (!model) {
+      // Try dynamic import of getModel as fallback
+      try {
+        const { getModel } = await import("@mariozechner/pi-ai");
+        model = getModel(provider as any, modelId as any);
+      } catch {
+        // getModel only works for built-in typed models
+      }
+    }
+
+    if (!model) {
+      return {
+        status: "fail",
+        failure_reason: `Model not found: ${provider}/${modelId}`,
+      };
+    }
+
+    // -- 2.2 Thinking level mapping -------------------------------------
+    const rawEffort = node.attrs.reasoning_effort as string | undefined;
+    let thinkingLevel: ThinkingLevel | undefined;
+    if (rawEffort) {
+      if (VALID_THINKING_LEVELS.has(rawEffort as ThinkingLevel)) {
+        thinkingLevel = rawEffort as ThinkingLevel;
+      } else {
+        // Log warning, fall through to undefined (pi defaults to medium)
+        console.warn(
+          `[PiBackend] Unknown reasoning_effort "${rawEffort}" on node "${node.id}", using default`,
+        );
+      }
+    }
+
+    // -- 2.3 Working directory ------------------------------------------
+    const cwd =
+      context.getString("workspace.path") || this._config.cwd;
+
+    // -- 2.4 Prompt composition -----------------------------------------
+    const fileContent = await loadPromptFiles(node);
+    const combinedPrompt = fileContent
+      ? `${fileContent}\n\n---\n\n${prompt}`
+      : prompt;
+
+    const contextSummary = buildContextSummary(context);
+    const fullPrompt = contextSummary
+      ? `${contextSummary}\n\n---\n\n${combinedPrompt}`
+      : combinedPrompt;
+
+    // -- 2.5 Safe resource loader defaults ------------------------------
+    const systemPrompt = this._config.systemPrompt;
+    const loader = new DefaultResourceLoader({
+      cwd,
+      noExtensions: true,
+      noSkills: true,
+      noPromptTemplates: true,
+      noThemes: true,
+      agentsFilesOverride: () => ({ agentsFiles: [] }),
+      systemPromptOverride: () => systemPrompt,
+    });
+    await loader.reload();
+
+    // -- 2.6 Tool configuration -----------------------------------------
+    const toolMode = this._config.toolMode ?? "coding";
+    const tools =
+      toolMode === "none"
+        ? []
+        : toolMode === "read-only"
+          ? readOnlyTools
+          : codingTools;
+
+    // -- 2.7 Session lifecycle ------------------------------------------
+    const sessionManager = SessionManager.inMemory(cwd);
+    const settingsManager = SettingsManager.inMemory({
+      compaction: { enabled: false },
+    });
+
+    const factory =
+      this._config._sessionFactory ?? createAgentSession;
+
+    let session: CreateAgentSessionResult["session"] | undefined;
+
+    try {
+      const sessionOpts: CreateAgentSessionOptions = {
+        cwd,
+        model,
+        thinkingLevel,
+        tools,
+        resourceLoader: loader,
+        sessionManager,
+        settingsManager,
+        authStorage: this._config.authStorage,
+        modelRegistry: this._config.modelRegistry,
+      };
+
+      const result = await factory(sessionOpts);
+      session = result.session;
+
+      // Subscribe to events for bridging
+      if (this._config.onStageEvent) {
+        const nodeId = node.id;
+        const onEvent = this._config.onStageEvent;
+        session.subscribe((event) => {
+          onEvent(nodeId, event);
+        });
+      }
+
+      // -- Send prompt and wait for completion --------------------------
+      await session.prompt(fullPrompt);
+
+      // -- 2.8 Usage extraction -----------------------------------------
+      const stats = session.getSessionStats();
+      const usageUpdates: Record<string, unknown> = {
+        [`${node.id}.usage.input_tokens`]: stats.tokens.input,
+        [`${node.id}.usage.output_tokens`]: stats.tokens.output,
+        [`${node.id}.usage.total_tokens`]: stats.tokens.total,
+        [`${node.id}.usage.cache_read_tokens`]: stats.tokens.cacheRead,
+        [`${node.id}.usage.cache_write_tokens`]: stats.tokens.cacheWrite,
+        [`${node.id}.usage.cost`]: stats.cost,
+      };
+
+      // -- 2.10 Outcome parsing -----------------------------------------
+      const responseText = session.getLastAssistantText() ?? "";
+
+      const parseOutcome =
+        this._config.parseOutcome ?? defaultParseOutcome;
+      const outcome = parseOutcome(responseText, node, context);
+
+      // Merge usage + full response into context_updates.
+      // The parser truncates ${node.id}.response to 2000 chars for context
+      // threading; _full_response preserves the complete text for log files.
+      outcome.context_updates = {
+        ...outcome.context_updates,
+        ...usageUpdates,
+        [`${node.id}._full_response`]: responseText,
+      };
+
+      return outcome;
+    } catch (err) {
+      // -- 2.9 Error handling -------------------------------------------
+      return {
+        status: "fail",
+        failure_reason: `LLM error: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    } finally {
+      session?.dispose();
+    }
+  }
+}

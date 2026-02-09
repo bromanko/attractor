@@ -51,6 +51,9 @@ export {
 // Stylesheet
 export { applyStylesheet, parseStylesheet } from "./stylesheet.js";
 
-// LLM Backend
-export { LlmBackend } from "./llm-backend.js";
-export type { LlmBackendConfig } from "./llm-backend.js";
+// Pi SDK Backend
+export { PiBackend } from "../pi-backend.js";
+export type { PiBackendConfig } from "../pi-backend.js";
+
+// Re-export ToolMode for CLI
+export type { ToolMode } from "../pi-backend.js";
