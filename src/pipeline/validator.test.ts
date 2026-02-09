@@ -169,4 +169,137 @@ describe("Validator", () => {
     const pf = diags.filter((d) => d.rule === "prompt_file_exists");
     expect(pf).toHaveLength(0);
   });
+
+  // failure_path rule
+  it("warns when infrastructure node has no failure path", () => {
+    const graph = parseDot(`
+      digraph G {
+        start [shape=Mdiamond]
+        exit  [shape=Msquare]
+        ci    [shape=parallelogram, tool_command="make test"]
+        work  [shape=box]
+        start -> ci -> work -> exit
+      }
+    `);
+    const diags = validate(graph).filter((d) => d.rule === "failure_path");
+    expect(diags).toHaveLength(1);
+    expect(diags[0].message).toContain("ci");
+  });
+
+  it("no failure_path warning when infra node routes to diamond gate", () => {
+    const graph = parseDot(`
+      digraph G {
+        start [shape=Mdiamond]
+        exit  [shape=Msquare]
+        ci    [shape=parallelogram, tool_command="make test"]
+        gate  [shape=diamond]
+        fix   [shape=box]
+        start -> ci -> gate
+        gate -> exit [condition="outcome=success"]
+        gate -> fix  [condition="outcome!=success"]
+        fix -> exit
+      }
+    `);
+    const diags = validate(graph).filter((d) => d.rule === "failure_path");
+    expect(diags).toHaveLength(0);
+  });
+
+  it("no failure_path warning when infra node has failure condition edge", () => {
+    const graph = parseDot(`
+      digraph G {
+        start [shape=Mdiamond]
+        exit  [shape=Msquare]
+        ci    [shape=parallelogram, tool_command="make test"]
+        fix   [shape=box]
+        start -> ci
+        ci -> exit [condition="outcome=success"]
+        ci -> fix  [condition="outcome!=success"]
+        fix -> exit
+      }
+    `);
+    const diags = validate(graph).filter((d) => d.rule === "failure_path");
+    expect(diags).toHaveLength(0);
+  });
+
+  it("does not flag LLM nodes for failure_path", () => {
+    const graph = parseDot(`
+      digraph G {
+        start  [shape=Mdiamond]
+        exit   [shape=Msquare]
+        review [shape=box, prompt="Review code"]
+        start -> review -> exit
+      }
+    `);
+    const diags = validate(graph).filter((d) => d.rule === "failure_path");
+    expect(diags).toHaveLength(0);
+  });
+
+  // conditional_gate_coverage rule
+  it("warns when diamond gate only handles success", () => {
+    const graph = parseDot(`
+      digraph G {
+        start [shape=Mdiamond]
+        exit  [shape=Msquare]
+        gate  [shape=diamond]
+        work  [shape=box]
+        start -> gate
+        gate -> work [condition="outcome=success"]
+        work -> exit
+      }
+    `);
+    const diags = validate(graph).filter((d) => d.rule === "conditional_gate_coverage");
+    expect(diags).toHaveLength(1);
+    expect(diags[0].message).toContain("not failure");
+  });
+
+  it("no gate coverage warning when both outcomes handled", () => {
+    const graph = parseDot(`
+      digraph G {
+        start [shape=Mdiamond]
+        exit  [shape=Msquare]
+        gate  [shape=diamond]
+        fix   [shape=box]
+        start -> gate
+        gate -> exit [condition="outcome=success"]
+        gate -> fix  [condition="outcome!=success"]
+        fix -> exit
+      }
+    `);
+    const diags = validate(graph).filter((d) => d.rule === "conditional_gate_coverage");
+    expect(diags).toHaveLength(0);
+  });
+
+  // human_gate_options rule
+  it("warns when human gate has fewer than 2 options", () => {
+    const graph = parseDot(`
+      digraph G {
+        start [shape=Mdiamond]
+        exit  [shape=Msquare]
+        gate  [shape=hexagon]
+        start -> gate -> exit
+      }
+    `);
+    const diags = validate(graph).filter((d) => d.rule === "human_gate_options");
+    expect(diags).toHaveLength(1);
+    expect(diags[0].message).toContain("1 outgoing");
+  });
+
+  it("no human_gate warning when 2+ options present", () => {
+    const graph = parseDot(`
+      digraph G {
+        start [shape=Mdiamond]
+        exit  [shape=Msquare]
+        gate  [shape=hexagon]
+        a     [shape=box]
+        b     [shape=box]
+        start -> gate
+        gate -> a [label="Yes"]
+        gate -> b [label="No"]
+        a -> exit
+        b -> exit
+      }
+    `);
+    const diags = validate(graph).filter((d) => d.rule === "human_gate_options");
+    expect(diags).toHaveLength(0);
+  });
 });

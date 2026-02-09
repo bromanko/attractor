@@ -174,6 +174,85 @@ export function validate(graph: Graph): Diagnostic[] {
     }
   }
 
+  // failure_path: nodes that can fail catastrophically (workspace, CI, tool
+  // commands) should have a failure path — either a condition-based edge for
+  // outcome!=success, or an unconditional edge to a conditional gate (diamond).
+  // LLM/codergen nodes are excluded because their "fail" is typically a
+  // deliberate signal (e.g. [STATUS: fail] from a review) not a crash.
+  const routingShapes = new Set(["diamond", "Mdiamond", "Msquare", "hexagon"]);
+  const infraTypes = new Set(["workspace.create", "workspace.merge", "workspace.cleanup", "selfci"]);
+  for (const node of graph.nodes) {
+    const shape = node.attrs.shape ?? "box";
+    if (routingShapes.has(shape)) continue;
+
+    // Only flag infrastructure/tool nodes, not LLM nodes
+    const handlerType = node.attrs.type || SHAPE_TO_TYPE[shape] || "codergen";
+    const isInfra = infraTypes.has(handlerType)
+      || node.attrs.tool_command
+      || shape === "parallelogram";  // selfci shape
+    if (!isInfra) continue;
+
+    const outgoing = graph.edges.filter((e) => e.from === node.id);
+    if (outgoing.length === 0) continue;
+
+    const hasFailureCondition = outgoing.some(
+      (e) => e.attrs.condition && /outcome\s*!=\s*success|outcome\s*=\s*fail/i.test(e.attrs.condition),
+    );
+    const hasUnconditionalToGate = outgoing.some((e) => {
+      if (e.attrs.condition) return false;
+      const target = graph.nodes.find((n) => n.id === e.to);
+      return target?.attrs.shape === "diamond";
+    });
+
+    if (!hasFailureCondition && !hasUnconditionalToGate) {
+      diagnostics.push(diag("failure_path", "warning",
+        `Node "${node.id}" has no failure path. If this stage fails, the pipeline will halt. ` +
+        `Add a condition="outcome!=success" edge or route through a conditional gate (diamond).`,
+        { node_id: node.id },
+      ));
+    }
+  }
+
+  // conditional_gate_coverage: diamond nodes should have edges for both
+  // success and non-success outcomes
+  for (const node of graph.nodes) {
+    if (node.attrs.shape !== "diamond") continue;
+    const outgoing = graph.edges.filter((e) => e.from === node.id);
+    if (outgoing.length === 0) continue;
+
+    const hasSuccess = outgoing.some(
+      (e) => e.attrs.condition && /outcome\s*=\s*success/i.test(e.attrs.condition),
+    );
+    const hasFailure = outgoing.some(
+      (e) => e.attrs.condition && /outcome\s*!=\s*success|outcome\s*=\s*fail/i.test(e.attrs.condition),
+    );
+
+    if (hasSuccess && !hasFailure) {
+      diagnostics.push(diag("conditional_gate_coverage", "warning",
+        `Conditional gate "${node.id}" handles success but not failure. Add an edge with condition="outcome!=success".`,
+        { node_id: node.id },
+      ));
+    }
+    if (hasFailure && !hasSuccess) {
+      diagnostics.push(diag("conditional_gate_coverage", "warning",
+        `Conditional gate "${node.id}" handles failure but not success. Add an edge with condition="outcome=success".`,
+        { node_id: node.id },
+      ));
+    }
+  }
+
+  // human_gate_options: hexagon nodes should have at least 2 outgoing edges
+  for (const node of graph.nodes) {
+    if (node.attrs.shape !== "hexagon") continue;
+    const outgoing = graph.edges.filter((e) => e.from === node.id);
+    if (outgoing.length < 2) {
+      diagnostics.push(diag("human_gate_options", "warning",
+        `Human gate "${node.id}" has ${outgoing.length} outgoing edge(s). A gate should offer at least 2 choices.`,
+        { node_id: node.id },
+      ));
+    }
+  }
+
   // prompt_on_llm_nodes
   for (const node of graph.nodes) {
     const handlerType = node.attrs.type || SHAPE_TO_TYPE[node.attrs.shape ?? "box"] || "codergen";
