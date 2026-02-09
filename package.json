@@ -25,6 +25,7 @@
   "scripts": {
     "build": "tsc",
     "test": "node --experimental-vm-modules node_modules/.bin/vitest run",
+    "test:integration": "node --experimental-vm-modules node_modules/.bin/vitest run test/integration",
     "test:watch": "node --experimental-vm-modules node_modules/.bin/vitest",
     "lint": "tsc --noEmit",
     "clean": "rm -rf dist"

@@ -1,0 +1,16 @@
+// Model stylesheet applying per-class and per-id overrides
+digraph Stylesheet {
+  graph [
+    goal="Test model stylesheet"
+    model_stylesheet="* { llm_model: default-model; llm_provider: default-provider } .review { llm_model: review-model; llm_provider: review-provider } #deploy { llm_model: deploy-model }"
+  ]
+
+  start  [shape=Mdiamond]
+  exit   [shape=Msquare]
+  plan   [shape=box, prompt="Plan"]
+  rev1   [shape=box, prompt="Review code", class="review"]
+  rev2   [shape=box, prompt="Review security", class="review"]
+  deploy [shape=box, prompt="Deploy"]
+
+  start -> plan -> rev1 -> rev2 -> deploy -> exit
+}

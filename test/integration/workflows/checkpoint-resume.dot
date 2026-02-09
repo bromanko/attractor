@@ -1,0 +1,11 @@
+// Multi-step pipeline for checkpoint/resume testing
+digraph CheckpointResume {
+  graph [goal="Test checkpoint and resume"]
+  start [shape=Mdiamond]
+  exit  [shape=Msquare]
+  a     [shape=box, prompt="Step A"]
+  b     [shape=box, prompt="Step B"]
+  c     [shape=box, prompt="Step C"]
+  d     [shape=box, prompt="Step D"]
+  start -> a -> b -> c -> d -> exit
+}

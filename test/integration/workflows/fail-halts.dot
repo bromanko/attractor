@@ -1,0 +1,11 @@
+// Non-routing failure with no failure edge should halt the pipeline
+digraph FailHalts {
+  graph [goal="Test failure halts"]
+  start  [shape=Mdiamond]
+  exit   [shape=Msquare]
+  setup  [shape=box, prompt="Setup environment"]
+  work   [shape=box, prompt="Do work"]
+  finish [shape=box, prompt="Finish"]
+
+  start -> setup -> work -> finish -> exit
+}

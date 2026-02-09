@@ -1,0 +1,7 @@
+// Invalid: no exit node — validator should reject
+digraph InvalidNoExit {
+  graph [goal="Should fail validation"]
+  start [shape=Mdiamond]
+  work  [shape=box, prompt="Work"]
+  start -> work
+}

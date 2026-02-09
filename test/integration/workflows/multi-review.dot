@@ -1,0 +1,26 @@
+// Serial review chain — early exit to fix on any review failure
+digraph MultiReview {
+  graph [goal="Test serial review chain"]
+  start   [shape=Mdiamond]
+  exit    [shape=Msquare]
+  code    [shape=box, prompt="Write code"]
+  rev1    [shape=box, prompt="Review: code quality"]
+  rev2    [shape=box, prompt="Review: security"]
+  rev3    [shape=box, prompt="Review: performance"]
+  gate    [shape=diamond, label="All pass?"]
+  fix     [shape=box, prompt="Fix review findings"]
+
+  start -> code -> rev1
+
+  rev1 -> rev2 [condition="outcome=success"]
+  rev1 -> gate [condition="outcome!=success"]
+
+  rev2 -> rev3 [condition="outcome=success"]
+  rev2 -> gate [condition="outcome!=success"]
+
+  rev3 -> gate
+
+  gate -> exit [label="Pass", condition="outcome=success"]
+  gate -> fix  [label="Fail", condition="outcome!=success"]
+  fix  -> rev1
+}

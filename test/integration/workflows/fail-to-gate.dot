@@ -1,0 +1,16 @@
+// Failure forwarded through unconditional edge to a conditional gate
+digraph FailToGate {
+  graph [goal="Test failure forwarding to gate"]
+  start   [shape=Mdiamond]
+  exit    [shape=Msquare]
+  review  [shape=box, prompt="Review code"]
+  gate    [shape=diamond, label="Review passed?"]
+  ok      [shape=box, prompt="Ship it"]
+  revise  [shape=box, prompt="Revise code"]
+
+  start  -> review -> gate
+  gate   -> ok     [label="Pass", condition="outcome=success"]
+  gate   -> revise [label="Fail", condition="outcome!=success"]
+  ok     -> exit
+  revise -> exit
+}

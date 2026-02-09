@@ -1,0 +1,876 @@
+/**
+ * Integration tests for the Attractor pipeline engine.
+ *
+ * Each test loads a real DOT workflow file, runs it through the engine
+ * with a mock backend (no LLM calls), and asserts on behavior.
+ */
+
+import { describe, it, expect, afterAll } from "vitest";
+import { readFile, mkdtemp, readdir, mkdir, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { parseDot } from "../../src/pipeline/dot-parser.js";
+import { validate, validateOrRaise } from "../../src/pipeline/validator.js";
+import { runPipeline } from "../../src/pipeline/engine.js";
+import { applyStylesheet } from "../../src/pipeline/stylesheet.js";
+import type {
+  CodergenBackend,
+  Outcome,
+  PipelineEvent,
+  GraphNode,
+  Checkpoint,
+  Interviewer,
+  Question,
+  Answer,
+} from "../../src/pipeline/types.js";
+import { Context } from "../../src/pipeline/types.js";
+import type { JjRunner } from "../../src/pipeline/workspace.js";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+const WORKFLOWS = join(import.meta.dirname, "workflows");
+
+async function loadWorkflow(name: string) {
+  const dot = await readFile(join(WORKFLOWS, name), "utf-8");
+  return parseDot(dot);
+}
+
+let suiteTempRootPromise: Promise<string> | undefined;
+let tempDirCounter = 0;
+
+async function getSuiteTempRoot(): Promise<string> {
+  if (!suiteTempRootPromise) {
+    suiteTempRootPromise = mkdtemp(join(tmpdir(), "attractor-integ-"));
+  }
+  return suiteTempRootPromise;
+}
+
+async function tempDir() {
+  const suiteRoot = await getSuiteTempRoot();
+  const dir = join(suiteRoot, `test-${tempDirCounter++}`);
+  await mkdir(dir, { recursive: true });
+  return dir;
+}
+
+afterAll(async () => {
+  if (!suiteTempRootPromise) return;
+  const suiteRoot = await suiteTempRootPromise;
+  await rm(suiteRoot, { recursive: true, force: true });
+});
+
+/** Backend that always succeeds with a simple response. */
+const successBackend: CodergenBackend = {
+  async run(node) {
+    return `Completed: ${node.id}`;
+  },
+};
+
+/** Backend that returns a specific outcome for specific nodes. */
+function nodeOutcomeBackend(
+  outcomes: Record<string, Outcome>,
+): CodergenBackend {
+  return {
+    async run(node) {
+      if (node.id in outcomes) return outcomes[node.id];
+      return `Completed: ${node.id}`;
+    },
+  };
+}
+
+/** Backend that captures the prompt sent to each node. */
+function promptCapture(): {
+  backend: CodergenBackend;
+  prompts: Map<string, string>;
+} {
+  const prompts = new Map<string, string>();
+  return {
+    prompts,
+    backend: {
+      async run(node, prompt) {
+        prompts.set(node.id, prompt);
+        return `Completed: ${node.id}`;
+      },
+    },
+  };
+}
+
+/** Collect pipeline events. */
+function eventCollector(): {
+  events: PipelineEvent[];
+  onEvent: (e: PipelineEvent) => void;
+} {
+  const events: PipelineEvent[] = [];
+  return { events, onEvent: (e) => events.push(e) };
+}
+
+/** Interviewer that always picks the first option (approve). */
+const approveInterviewer: Interviewer = {
+  async ask(question: Question): Promise<Answer> {
+    if (question.options.length > 0) {
+      return { value: question.options[0].key, selected_option: question.options[0] };
+    }
+    return { value: "yes" };
+  },
+};
+
+/** Interviewer that always picks a specific option by label substring. */
+function selectInterviewer(labelSubstring: string): Interviewer {
+  return {
+    async ask(question: Question): Promise<Answer> {
+      const match = question.options.find((o) =>
+        o.label.toLowerCase().includes(labelSubstring.toLowerCase()),
+      );
+      if (match) return { value: match.key, selected_option: match };
+      return { value: question.options[0]?.key ?? "yes", selected_option: question.options[0] };
+    },
+  };
+}
+
+/** Mock jj runner for workspace tests. */
+function mockJj(
+  overrides: Record<string, string> = {},
+): JjRunner & { calls: string[][] } {
+  const calls: string[][] = [];
+  const runner = async (args: string[]): Promise<string> => {
+    calls.push([...args]);
+    const cmd = args.slice(0, 2).join(" ");
+    if (cmd in overrides) return overrides[cmd];
+    if (args[0] in overrides) return overrides[args[0]];
+    return "";
+  };
+  (runner as any).calls = calls;
+  return runner as JjRunner & { calls: string[][] };
+}
+
+// ===========================================================================
+// 1. Linear pipeline
+// ===========================================================================
+
+describe("Linear pipeline", () => {
+  it("traverses start → work → exit", async () => {
+    const graph = await loadWorkflow("linear.dot");
+    const logs = await tempDir();
+    const result = await runPipeline({ graph, logsRoot: logs, backend: successBackend });
+
+    expect(result.status).toBe("success");
+    expect(result.completedNodes).toEqual(["start", "work", "exit"]);
+  });
+
+  it("writes prompt and response artifacts", async () => {
+    const graph = await loadWorkflow("linear.dot");
+    const logs = await tempDir();
+    await runPipeline({ graph, logsRoot: logs, backend: successBackend });
+
+    const prompt = await readFile(join(logs, "work", "prompt.md"), "utf-8");
+    expect(prompt).toContain("Test linear execution");
+
+    const response = await readFile(join(logs, "work", "response.md"), "utf-8");
+    expect(response).toContain("Completed: work");
+
+    const status = JSON.parse(await readFile(join(logs, "work", "status.json"), "utf-8"));
+    expect(status.outcome).toBe("success");
+  });
+
+  it("writes checkpoint.json after each node", async () => {
+    const graph = await loadWorkflow("linear.dot");
+    const logs = await tempDir();
+    await runPipeline({ graph, logsRoot: logs, backend: successBackend });
+
+    const cp = JSON.parse(await readFile(join(logs, "checkpoint.json"), "utf-8"));
+    expect(cp.completed_nodes).toContain("work");
+    // The last checkpoint is saved after the penultimate node (exit node
+    // is executed but pipeline ends immediately after, so exit may not
+    // appear in the checkpoint's completed_nodes).
+    expect(cp.context_values["graph.goal"]).toBe("Test linear execution");
+  });
+});
+
+// ===========================================================================
+// 2. Conditional branching
+// ===========================================================================
+
+describe("Conditional branching", () => {
+  it("takes success path when build succeeds", async () => {
+    const graph = await loadWorkflow("branching.dot");
+    const logs = await tempDir();
+    const result = await runPipeline({ graph, logsRoot: logs, backend: successBackend });
+
+    expect(result.status).toBe("success");
+    expect(result.completedNodes).toContain("deploy");
+    expect(result.completedNodes).not.toContain("fix");
+  });
+
+  it("takes failure path when build fails", async () => {
+    const backend = nodeOutcomeBackend({
+      build: { status: "fail", failure_reason: "compile error" },
+    });
+    const graph = await loadWorkflow("branching.dot");
+    const logs = await tempDir();
+    const result = await runPipeline({ graph, logsRoot: logs, backend });
+
+    expect(result.status).toBe("success");
+    expect(result.completedNodes).toContain("fix");
+    expect(result.completedNodes).not.toContain("deploy");
+  });
+});
+
+// ===========================================================================
+// 3. Retry logic and fix loop
+// ===========================================================================
+
+describe("Retry and fix loop", () => {
+  it("completes when all stages succeed", async () => {
+    const graph = await loadWorkflow("retry-loop.dot");
+    const logs = await tempDir();
+    const result = await runPipeline({ graph, logsRoot: logs, backend: successBackend });
+
+    expect(result.status).toBe("success");
+    expect(result.completedNodes).toContain("implement");
+    expect(result.completedNodes).toContain("ci");
+  });
+
+  it("retries a node up to max_retries on failure", async () => {
+    let attempts = 0;
+    const backend: CodergenBackend = {
+      async run(node) {
+        if (node.id === "implement") {
+          attempts++;
+          if (attempts <= 2) return { status: "fail", failure_reason: `attempt ${attempts}` };
+        }
+        return `Done: ${node.id}`;
+      },
+    };
+
+    const graph = await loadWorkflow("retry-loop.dot");
+    const logs = await tempDir();
+    const result = await runPipeline({ graph, logsRoot: logs, backend });
+
+    // 2 retries + 1 final = 3 attempts, third one succeeds
+    expect(attempts).toBe(3);
+    expect(result.status).toBe("success");
+  });
+});
+
+// ===========================================================================
+// 4. Human gate
+// ===========================================================================
+
+describe("Human gate", () => {
+  it("follows approve path with approve interviewer", async () => {
+    const graph = await loadWorkflow("human-gate.dot");
+    const logs = await tempDir();
+    const result = await runPipeline({
+      graph,
+      logsRoot: logs,
+      backend: successBackend,
+      interviewer: approveInterviewer,
+    });
+
+    expect(result.status).toBe("success");
+    expect(result.completedNodes).toContain("implement");
+  });
+
+  it("follows revise path when human selects Revise", async () => {
+    // First call: select Revise; second call: select Approve
+    let callCount = 0;
+    const interviewer: Interviewer = {
+      async ask(q: Question): Promise<Answer> {
+        callCount++;
+        if (callCount === 1) {
+          const revise = q.options.find((o) => o.label.includes("Revise"));
+          return { value: revise!.key, selected_option: revise };
+        }
+        const approve = q.options.find((o) => o.label.includes("Approve"));
+        return { value: approve!.key, selected_option: approve };
+      },
+    };
+
+    const graph = await loadWorkflow("human-gate.dot");
+    const logs = await tempDir();
+    const result = await runPipeline({
+      graph,
+      logsRoot: logs,
+      backend: successBackend,
+      interviewer,
+    });
+
+    expect(result.status).toBe("success");
+    expect(result.completedNodes).toContain("revise");
+    expect(result.completedNodes).toContain("implement");
+  });
+});
+
+// ===========================================================================
+// 5. Tool node
+// ===========================================================================
+
+describe("Tool node", () => {
+  it("executes shell command and captures output", async () => {
+    const graph = await loadWorkflow("tool-node.dot");
+    const logs = await tempDir();
+    const { events, onEvent } = eventCollector();
+    const result = await runPipeline({
+      graph,
+      logsRoot: logs,
+      backend: successBackend,
+      onEvent,
+    });
+
+    expect(result.status).toBe("success");
+    expect(result.completedNodes).toContain("check");
+    expect(result.completedNodes).toContain("report");
+  });
+
+  it("tool failure routes through gate to exit", async () => {
+    // Modify the graph to use a command that fails
+    const graph = await loadWorkflow("tool-node.dot");
+    const checkNode = graph.nodes.find((n) => n.id === "check")!;
+    checkNode.attrs.tool_command = "false";  // exit code 1
+
+    const logs = await tempDir();
+    const result = await runPipeline({
+      graph,
+      logsRoot: logs,
+      backend: successBackend,
+    });
+
+    // Tool fails → gate → outcome!=success → exit
+    expect(result.status).toBe("success");
+    expect(result.completedNodes).toContain("check");
+    expect(result.completedNodes).not.toContain("report");
+  });
+});
+
+// ===========================================================================
+// 6. Goal gate
+// ===========================================================================
+
+describe("Goal gate", () => {
+  it("passes when goal-gated node succeeds", async () => {
+    const graph = await loadWorkflow("goal-gate.dot");
+    const logs = await tempDir();
+    const result = await runPipeline({ graph, logsRoot: logs, backend: successBackend });
+
+    expect(result.status).toBe("success");
+  });
+
+  it("fails pipeline when goal-gated node fails", async () => {
+    const backend = nodeOutcomeBackend({
+      critical: { status: "fail", failure_reason: "critical task failed" },
+    });
+    const graph = await loadWorkflow("goal-gate.dot");
+    const logs = await tempDir();
+    const result = await runPipeline({ graph, logsRoot: logs, backend });
+
+    expect(result.status).toBe("fail");
+  });
+});
+
+// ===========================================================================
+// 7. Multi-review chain
+// ===========================================================================
+
+describe("Multi-review chain", () => {
+  it("passes all reviews → exits successfully", async () => {
+    const graph = await loadWorkflow("multi-review.dot");
+    const logs = await tempDir();
+    const result = await runPipeline({ graph, logsRoot: logs, backend: successBackend });
+
+    expect(result.status).toBe("success");
+    expect(result.completedNodes).toContain("rev1");
+    expect(result.completedNodes).toContain("rev2");
+    expect(result.completedNodes).toContain("rev3");
+    expect(result.completedNodes).not.toContain("fix");
+  });
+
+  it("short-circuits to gate when first review fails", async () => {
+    // rev1 fails on first pass, succeeds after fix
+    let rev1Calls = 0;
+    const backend: CodergenBackend = {
+      async run(node) {
+        if (node.id === "rev1") {
+          rev1Calls++;
+          if (rev1Calls === 1) return { status: "fail", failure_reason: "code quality issues" };
+        }
+        return `Done: ${node.id}`;
+      },
+    };
+    const graph = await loadWorkflow("multi-review.dot");
+    const logs = await tempDir();
+    const result = await runPipeline({ graph, logsRoot: logs, backend });
+
+    expect(result.completedNodes).toContain("rev1");
+    expect(result.completedNodes).toContain("gate");
+    expect(result.completedNodes).toContain("fix");
+    expect(result.status).toBe("success");
+  });
+
+  it("short-circuits at second review failure", async () => {
+    // rev2 fails on first pass, succeeds after fix
+    let rev2Calls = 0;
+    const backend: CodergenBackend = {
+      async run(node) {
+        if (node.id === "rev2") {
+          rev2Calls++;
+          if (rev2Calls === 1) return { status: "fail", failure_reason: "security vulnerability" };
+        }
+        return `Done: ${node.id}`;
+      },
+    };
+    const graph = await loadWorkflow("multi-review.dot");
+    const logs = await tempDir();
+    const result = await runPipeline({ graph, logsRoot: logs, backend });
+
+    expect(result.completedNodes).toContain("rev1");
+    expect(result.completedNodes).toContain("rev2");
+    expect(result.completedNodes).toContain("gate");
+    expect(result.completedNodes).toContain("fix");
+    expect(result.status).toBe("success");
+  });
+});
+
+// ===========================================================================
+// 8. Variable expansion
+// ===========================================================================
+
+describe("Variable expansion", () => {
+  it("expands $goal in prompts", async () => {
+    const { backend, prompts } = promptCapture();
+    const graph = await loadWorkflow("variable-expansion.dot");
+    const logs = await tempDir();
+    await runPipeline({ graph, logsRoot: logs, backend });
+
+    expect(prompts.get("plan")).toBe("Plan: Build a REST API");
+    expect(prompts.get("impl")).toBe("Implement: Build a REST API");
+  });
+
+  it("expands --goal override", async () => {
+    const { backend, prompts } = promptCapture();
+    const graph = await loadWorkflow("variable-expansion.dot");
+    graph.attrs.goal = "Custom goal override";
+    const logs = await tempDir();
+    await runPipeline({ graph, logsRoot: logs, backend });
+
+    expect(prompts.get("plan")).toBe("Plan: Custom goal override");
+  });
+});
+
+// ===========================================================================
+// 9. Edge weight selection
+// ===========================================================================
+
+describe("Edge weight selection", () => {
+  it("follows higher-weighted unconditional edge", async () => {
+    const graph = await loadWorkflow("weighted-edges.dot");
+    const logs = await tempDir();
+    const result = await runPipeline({ graph, logsRoot: logs, backend: successBackend });
+
+    expect(result.completedNodes).toContain("path_hi");
+    expect(result.completedNodes).not.toContain("path_lo");
+  });
+});
+
+// ===========================================================================
+// 10. Checkpoint and resume
+// ===========================================================================
+
+describe("Checkpoint and resume", () => {
+  it("resumes from a saved checkpoint", async () => {
+    const graph = await loadWorkflow("checkpoint-resume.dot");
+
+    // First run: complete all
+    const logs1 = await tempDir();
+    await runPipeline({ graph, logsRoot: logs1, backend: successBackend });
+
+    const cp: Checkpoint = JSON.parse(
+      await readFile(join(logs1, "checkpoint.json"), "utf-8"),
+    );
+
+    // Modify checkpoint to resume from node "c"
+    cp.resume_at = "c";
+
+    const logs2 = await tempDir();
+    const result = await runPipeline({
+      graph,
+      logsRoot: logs2,
+      backend: successBackend,
+      checkpoint: cp,
+    });
+
+    expect(result.status).toBe("success");
+    // Should have re-executed c and d, not a and b
+    expect(result.completedNodes).toContain("c");
+    expect(result.completedNodes).toContain("d");
+  });
+
+  it("restores context from checkpoint", async () => {
+    const graph = await loadWorkflow("checkpoint-resume.dot");
+    const logs1 = await tempDir();
+    await runPipeline({ graph, logsRoot: logs1, backend: successBackend });
+
+    const cp: Checkpoint = JSON.parse(
+      await readFile(join(logs1, "checkpoint.json"), "utf-8"),
+    );
+    cp.resume_at = "d";
+
+    let capturedGoal: unknown;
+    const captureBackend: CodergenBackend = {
+      async run(node, _prompt, ctx) {
+        if (node.id === "d") capturedGoal = ctx.get("graph.goal");
+        return `Done: ${node.id}`;
+      },
+    };
+
+    const logs2 = await tempDir();
+    await runPipeline({
+      graph,
+      logsRoot: logs2,
+      backend: captureBackend,
+      checkpoint: cp,
+    });
+
+    expect(capturedGoal).toBe("Test checkpoint and resume");
+  });
+});
+
+// ===========================================================================
+// 11. Failure halts pipeline
+// ===========================================================================
+
+describe("Failure halts pipeline", () => {
+  it("stops when node fails with no failure edge", async () => {
+    const backend = nodeOutcomeBackend({
+      setup: { status: "fail", failure_reason: "setup exploded" },
+    });
+    const graph = await loadWorkflow("fail-halts.dot");
+    const logs = await tempDir();
+    const { events, onEvent } = eventCollector();
+    const result = await runPipeline({
+      graph,
+      logsRoot: logs,
+      backend,
+      onEvent,
+    });
+
+    expect(result.status).toBe("fail");
+    expect(result.completedNodes).toContain("setup");
+    expect(result.completedNodes).not.toContain("work");
+    expect(result.completedNodes).not.toContain("finish");
+    expect(events.some((e) => e.kind === "pipeline_failed")).toBe(true);
+  });
+});
+
+// ===========================================================================
+// 12. Failure forwarded through gate
+// ===========================================================================
+
+describe("Failure forwarded through gate", () => {
+  it("routes failure through unconditional edge to conditional gate", async () => {
+    const backend = nodeOutcomeBackend({
+      review: { status: "fail", failure_reason: "needs work" },
+    });
+    const graph = await loadWorkflow("fail-to-gate.dot");
+    const logs = await tempDir();
+    const result = await runPipeline({ graph, logsRoot: logs, backend });
+
+    expect(result.status).toBe("success");
+    expect(result.completedNodes).toContain("review");
+    expect(result.completedNodes).toContain("gate");
+    expect(result.completedNodes).toContain("revise");
+    expect(result.completedNodes).not.toContain("ok");
+  });
+});
+
+// ===========================================================================
+// 13. Large pipeline
+// ===========================================================================
+
+describe("Large pipeline", () => {
+  it("traverses 15+ node pipeline end-to-end", async () => {
+    const graph = await loadWorkflow("large-pipeline.dot");
+    const logs = await tempDir();
+    const result = await runPipeline({ graph, logsRoot: logs, backend: successBackend });
+
+    expect(result.status).toBe("success");
+    expect(result.completedNodes.length).toBeGreaterThanOrEqual(12);
+    expect(result.completedNodes).toContain("deploy");
+    expect(result.completedNodes).toContain("exit");
+  });
+
+  it("validates without errors", async () => {
+    const graph = await loadWorkflow("large-pipeline.dot");
+    const diagnostics = validate(graph);
+    const errors = diagnostics.filter((d) => d.severity === "error");
+    expect(errors).toHaveLength(0);
+  });
+});
+
+// ===========================================================================
+// 14. Workspace lifecycle (mock jj)
+// ===========================================================================
+
+describe("Workspace lifecycle", () => {
+  it("create → work → merge → cleanup with mock jj", async () => {
+    const jj = mockJj({
+      root: "/tmp/test-repo",
+      "workspace list": "default: /tmp/test-repo",
+      log: "abc12345",
+      "workspace add": "",
+      rebase: "",
+      "workspace forget": "",
+    });
+
+    const graph = await loadWorkflow("workspace-lifecycle.dot");
+    const logs = await tempDir();
+    const result = await runPipeline({
+      graph,
+      logsRoot: logs,
+      backend: successBackend,
+      jjRunner: jj,
+      cleanupWorkspaceOnFailure: false,
+    });
+
+    expect(result.status).toBe("success");
+    expect(result.completedNodes).toContain("ws_create");
+    expect(result.completedNodes).toContain("work");
+    expect(result.completedNodes).toContain("ws_merge");
+    expect(result.completedNodes).toContain("ws_cleanup");
+
+    // Verify jj calls
+    expect(jj.calls.some((c) => c[0] === "workspace" && c[1] === "add")).toBe(true);
+    expect(jj.calls.some((c) => c[0] === "workspace" && c[1] === "forget")).toBe(true);
+  });
+});
+
+// ===========================================================================
+// 15. Validation — invalid workflows
+// ===========================================================================
+
+describe("Validation", () => {
+  it("rejects workflow with no start node", async () => {
+    const graph = await loadWorkflow("invalid-no-start.dot");
+    const diagnostics = validate(graph);
+    const errors = diagnostics.filter((d) => d.severity === "error");
+
+    expect(errors.length).toBeGreaterThan(0);
+    expect(errors.some((d) => d.rule === "start_node")).toBe(true);
+  });
+
+  it("rejects workflow with no exit node", async () => {
+    const graph = await loadWorkflow("invalid-no-exit.dot");
+    const diagnostics = validate(graph);
+    const errors = diagnostics.filter((d) => d.severity === "error");
+
+    expect(errors.length).toBeGreaterThan(0);
+    expect(errors.some((d) => d.rule === "terminal_node")).toBe(true);
+  });
+
+  it("flags unreachable nodes", async () => {
+    const graph = await loadWorkflow("invalid-unreachable.dot");
+    const diagnostics = validate(graph);
+
+    expect(diagnostics.some((d) => d.rule === "reachability")).toBe(true);
+  });
+
+  it("throws on validateOrRaise for invalid graphs", async () => {
+    const graph = await loadWorkflow("invalid-no-start.dot");
+    expect(() => validateOrRaise(graph)).toThrow(/validation failed/i);
+  });
+
+  it("validates all valid workflow files without errors", async () => {
+    const validFiles = [
+      "linear.dot",
+      "branching.dot",
+      "retry-loop.dot",
+      "human-gate.dot",
+      "tool-node.dot",
+      "goal-gate.dot",
+      "multi-review.dot",
+      "variable-expansion.dot",
+      "weighted-edges.dot",
+      "checkpoint-resume.dot",
+      "fail-halts.dot",
+      "fail-to-gate.dot",
+      "large-pipeline.dot",
+      "workspace-lifecycle.dot",
+    ];
+
+    const graphs = await Promise.all(
+      validFiles.map(async (file) => ({
+        file,
+        graph: await loadWorkflow(file),
+      })),
+    );
+
+    for (const { file, graph } of graphs) {
+      const diagnostics = validate(graph);
+      const errors = diagnostics.filter((d) => d.severity === "error");
+      expect(errors, `${file} should have no validation errors`).toHaveLength(0);
+    }
+  });
+});
+
+// ===========================================================================
+// 16. Model stylesheet
+// ===========================================================================
+
+describe("Model stylesheet", () => {
+  it("applies class and id selectors to node attrs", async () => {
+    const graph = await loadWorkflow("stylesheet.dot");
+    applyStylesheet(graph);
+
+    const plan = graph.nodes.find((n) => n.id === "plan")!;
+    const rev1 = graph.nodes.find((n) => n.id === "rev1")!;
+    const rev2 = graph.nodes.find((n) => n.id === "rev2")!;
+    const deploy = graph.nodes.find((n) => n.id === "deploy")!;
+
+    // * selector → default model
+    expect(plan.attrs.llm_model).toBe("default-model");
+    expect(plan.attrs.llm_provider).toBe("default-provider");
+
+    // .review class → review model
+    expect(rev1.attrs.llm_model).toBe("review-model");
+    expect(rev1.attrs.llm_provider).toBe("review-provider");
+    expect(rev2.attrs.llm_model).toBe("review-model");
+
+    // #deploy id → deploy model (higher specificity than *)
+    expect(deploy.attrs.llm_model).toBe("deploy-model");
+    // Provider not overridden by #deploy, falls back to * default
+    expect(deploy.attrs.llm_provider).toBe("default-provider");
+  });
+});
+
+// ===========================================================================
+// 17. Event emission
+// ===========================================================================
+
+describe("Event emission", () => {
+  it("emits lifecycle events in correct order", async () => {
+    const graph = await loadWorkflow("linear.dot");
+    const logs = await tempDir();
+    const { events, onEvent } = eventCollector();
+    await runPipeline({ graph, logsRoot: logs, backend: successBackend, onEvent });
+
+    const kinds = events.map((e) => e.kind);
+    expect(kinds[0]).toBe("pipeline_started");
+    expect(kinds[kinds.length - 1]).toBe("pipeline_completed");
+    expect(kinds.filter((k) => k === "stage_started").length).toBeGreaterThanOrEqual(2);
+    expect(kinds.filter((k) => k === "stage_completed").length).toBeGreaterThanOrEqual(2);
+    expect(kinds.filter((k) => k === "checkpoint_saved").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("emits pipeline_failed on halt", async () => {
+    const backend = nodeOutcomeBackend({
+      setup: { status: "fail", failure_reason: "boom" },
+    });
+    const graph = await loadWorkflow("fail-halts.dot");
+    const logs = await tempDir();
+    const { events, onEvent } = eventCollector();
+    await runPipeline({ graph, logsRoot: logs, backend, onEvent });
+
+    expect(events.some((e) => e.kind === "pipeline_failed")).toBe(true);
+    expect(events.some((e) => e.kind === "stage_failed")).toBe(true);
+  });
+
+  it("emits pipeline_resumed when resuming from checkpoint", async () => {
+    const graph = await loadWorkflow("checkpoint-resume.dot");
+    const logs1 = await tempDir();
+    await runPipeline({ graph, logsRoot: logs1, backend: successBackend });
+
+    const cp: Checkpoint = JSON.parse(
+      await readFile(join(logs1, "checkpoint.json"), "utf-8"),
+    );
+    cp.resume_at = "c";
+
+    const logs2 = await tempDir();
+    const { events, onEvent } = eventCollector();
+    await runPipeline({
+      graph,
+      logsRoot: logs2,
+      backend: successBackend,
+      checkpoint: cp,
+      onEvent,
+    });
+
+    expect(events.some((e) => e.kind === "pipeline_resumed")).toBe(true);
+  });
+});
+
+// ===========================================================================
+// 18. Context flow between nodes
+// ===========================================================================
+
+describe("Context flow", () => {
+  it("passes context from earlier nodes to later ones", async () => {
+    let bContext: Record<string, unknown> | undefined;
+    const backend: CodergenBackend = {
+      async run(node, _prompt, ctx) {
+        if (node.id === "b") {
+          bContext = ctx.snapshot();
+        }
+        return `Done: ${node.id}`;
+      },
+    };
+
+    const graph = await loadWorkflow("checkpoint-resume.dot");
+    const logs = await tempDir();
+    await runPipeline({ graph, logsRoot: logs, backend });
+
+    expect(bContext).toBeDefined();
+    expect(bContext!["last_stage"]).toBe("a");
+    expect(bContext!["outcome"]).toBe("success");
+  });
+});
+
+// ===========================================================================
+// 19. CLI validate command (subprocess)
+// ===========================================================================
+
+describe("CLI", () => {
+  // Use the TypeScript source via tsx rather than the Nix wrapper
+  const CLI = join(import.meta.dirname, "../../dist/cli.js");
+  const CWD = join(import.meta.dirname, "../..");
+
+  it("validate accepts valid workflow", async () => {
+    const result = execFileSync(
+      "node",
+      ["--experimental-vm-modules", CLI, "validate", join(WORKFLOWS, "linear.dot")],
+      { encoding: "utf-8", cwd: CWD },
+    );
+    expect(result).toContain("valid");
+  });
+
+  it("validate rejects invalid workflow", async () => {
+    try {
+      execFileSync(
+        "node",
+        ["--experimental-vm-modules", CLI, "validate", join(WORKFLOWS, "invalid-no-start.dot")],
+        { encoding: "utf-8", cwd: CWD },
+      );
+      expect.fail("Should have thrown");
+    } catch (err: any) {
+      expect(err.status).toBe(1);
+    }
+  });
+
+  it("--dry-run prints graph info without executing", async () => {
+    const result = execFileSync(
+      "node",
+      [
+        "--experimental-vm-modules", CLI,
+        "run", join(WORKFLOWS, "linear.dot"),
+        "--dry-run",
+      ],
+      { encoding: "utf-8", cwd: CWD },
+    );
+    expect(result).toContain("Nodes:");
+    expect(result).toContain("Edges:");
+    expect(result).toContain("start");
+    expect(result).toContain("work");
+    expect(result).toContain("exit");
+  });
+});

@@ -1,0 +1,10 @@
+// goal_gate=true causes pipeline to fail at exit if unsatisfied
+digraph GoalGate {
+  graph [goal="Test goal gate enforcement"]
+  start     [shape=Mdiamond]
+  exit      [shape=Msquare]
+  critical  [shape=box, prompt="Must succeed", goal_gate=true]
+  optional  [shape=box, prompt="Nice to have"]
+
+  start -> critical -> optional -> exit
+}
