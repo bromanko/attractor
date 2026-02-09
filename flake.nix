@@ -18,13 +18,14 @@
           pname = "attractor";
           version = "0.1.0";
           src = ./.;
-          npmDepsHash = "sha256-2vhgQj/2g5qlCjJGTWzyi85MFaEqC2ppy7PEfoc1kXQ=";
+          npmDepsHash = "sha256-z7lJAVhr9cJZTcdfR0Kz8XpEpeIeV76zy7+bA2B/OTA=";
           buildPhase = ''
             npm run build
           '';
           installPhase = ''
             mkdir -p $out/lib/attractor $out/bin
             cp -r dist $out/lib/attractor/
+            cp -r node_modules $out/lib/attractor/
             cp package.json $out/lib/attractor/
 
             cat > $out/bin/attractor <<EOF
