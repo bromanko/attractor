@@ -1,0 +1,10 @@
+// Invalid: orphan node not reachable from start
+digraph InvalidUnreachable {
+  graph [goal="Should fail validation"]
+  start  [shape=Mdiamond]
+  exit   [shape=Msquare]
+  work   [shape=box, prompt="Work"]
+  orphan [shape=box, prompt="Nobody reaches me"]
+
+  start -> work -> exit
+}

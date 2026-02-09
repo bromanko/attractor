@@ -1,0 +1,15 @@
+// Edge weight tiebreaking for unconditional edges
+digraph WeightedEdges {
+  graph [goal="Test edge weight selection"]
+  start    [shape=Mdiamond]
+  exit     [shape=Msquare]
+  work     [shape=box, prompt="Do work"]
+  path_lo  [shape=box, prompt="Low priority path"]
+  path_hi  [shape=box, prompt="High priority path"]
+
+  start   -> work
+  work    -> path_lo [weight=1]
+  work    -> path_hi [weight=10]
+  path_lo -> exit
+  path_hi -> exit
+}

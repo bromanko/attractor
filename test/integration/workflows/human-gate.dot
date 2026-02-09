@@ -1,0 +1,16 @@
+// Human gate (hexagon) with two choices
+digraph HumanGate {
+  graph [goal="Test human gate"]
+  start    [shape=Mdiamond]
+  exit     [shape=Msquare]
+  plan     [shape=box, prompt="Create a plan"]
+  review   [shape=hexagon, label="Approve plan?"]
+  implement [shape=box, prompt="Implement plan"]
+  revise    [shape=box, prompt="Revise plan"]
+
+  start   -> plan -> review
+  review  -> implement [label="Approve"]
+  review  -> revise    [label="Revise"]
+  implement -> exit
+  revise    -> review
+}

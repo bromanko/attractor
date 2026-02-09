@@ -1,0 +1,15 @@
+// Node with max_retries, plus a fix-loop pattern
+digraph RetryLoop {
+  graph [goal="Test retry and fix loop"]
+  start     [shape=Mdiamond]
+  exit      [shape=Msquare]
+  implement [shape=box, prompt="Write code", max_retries=2]
+  ci        [shape=parallelogram, label="CI", tool_command="echo ok"]
+  gate      [shape=diamond, label="CI pass?"]
+  fix       [shape=box, prompt="Fix issues", max_retries=1]
+
+  start     -> implement -> ci -> gate
+  gate      -> exit [label="Pass", condition="outcome=success"]
+  gate      -> fix  [label="Fail", condition="outcome!=success"]
+  fix       -> ci
+}

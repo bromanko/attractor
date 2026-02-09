@@ -1,0 +1,8 @@
+// Simplest possible pipeline: start → work → exit
+digraph Linear {
+  graph [goal="Test linear execution"]
+  start [shape=Mdiamond]
+  exit  [shape=Msquare]
+  work  [shape=box, prompt="Do the work for: $goal"]
+  start -> work -> exit
+}
