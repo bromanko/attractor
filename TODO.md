@@ -30,6 +30,11 @@
   - [ ] Render a compact header (`severity`, `category`, `file:line`, short finding title) with optional expanded details.
   - [ ] Store parsed findings as structured JSON artifact per stage for later summarization/routing.
   - [ ] Add clearer visual treatment for finding blocks (border/background color panel) to separate them from pipeline status lines.
+- [ ] **Workflow usage/cost metrics in CLI output** — Show token and cost telemetry (similar to pi status bar) during runs when available, and always summarize at pipeline end.
+  - [ ] Track per-stage usage (`input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `total_tokens`, `cost`) from backend/context.
+  - [ ] Add optional live stage footer or periodic updates for running totals (tokens in/out + estimated cost).
+  - [ ] Extend final summary with run totals and a per-stage breakdown table.
+  - [ ] Gracefully degrade when usage data is unavailable (show `n/a`, keep summary format stable).
 
 ## Trust & Signal Integrity
 
