@@ -36,8 +36,25 @@ async function writeStatus(stageDir: string, outcome: Outcome): Promise<void> {
   );
 }
 
-function expandVariables(text: string, graph: Graph, _context: Context): string {
-  return text.replace(/\$goal/g, (graph.attrs.goal as string) ?? "");
+function expandVariables(text: string, graph: Graph, context: Context): string {
+  // Replace $goal with graph-level goal attribute
+  let result = text.replace(/\$goal/g, (graph.attrs.goal as string) ?? "");
+
+  // Replace $variable.name patterns with context values.
+  // Matches $word.word.word (dotted identifiers), longest-match first.
+  // IMPORTANT: If no context value exists, keep the original token intact
+  // so shell variables like $CANDIDATE continue to work inside tool commands.
+  const snapshot = context.snapshot();
+  result = result.replace(/\$([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)/g, (match, key) => {
+    if (key === "goal") return (graph.attrs.goal as string) ?? "";
+    if (Object.hasOwn(snapshot, key)) {
+      const value = snapshot[key];
+      return value == null ? "" : String(value);
+    }
+    return match;
+  });
+
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -201,18 +218,23 @@ export class ConditionalHandler implements Handler {
 // ---------------------------------------------------------------------------
 
 export class ToolHandler implements Handler {
-  async execute(node: GraphNode, context: Context): Promise<Outcome> {
-    const command = node.attrs.tool_command as string | undefined;
-    if (!command) {
+  async execute(node: GraphNode, context: Context, graph: Graph): Promise<Outcome> {
+    const rawCommand = node.attrs.tool_command as string | undefined;
+    if (!rawCommand) {
       return { status: "fail", failure_reason: "No tool_command specified" };
     }
+
+    // Expand $goal and $context.key variables in tool_command
+    const command = expandVariables(rawCommand, graph, context);
 
     // Use workspace path as cwd if a workspace is active
     const cwd = context.getString(WS_CONTEXT.PATH) || undefined;
 
     const { exec } = await import("node:child_process");
     return new Promise((resolve) => {
-      exec(command, { timeout: 30_000, cwd }, (error, stdout, stderr) => {
+      const env = { ...process.env, JJ_EDITOR: "true", GIT_EDITOR: "true" };
+      const timeoutMs = node.attrs.timeout ? parseInt(String(node.attrs.timeout), 10) * 1000 : 300_000;
+      exec(command, { timeout: timeoutMs, cwd, env }, (error, stdout, stderr) => {
         if (error) {
           resolve({ status: "fail", failure_reason: String(error) });
         } else {

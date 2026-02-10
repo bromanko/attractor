@@ -224,6 +224,13 @@ function emit(config: PipelineConfig, kind: PipelineEventKind, data: Record<stri
 export async function runPipeline(config: PipelineConfig): Promise<PipelineResult> {
   const { graph, logsRoot } = config;
 
+  // Force non-interactive editors for all subprocesses.
+  // LLM agents may run jj/git commands that open an editor (e.g. jj squash),
+  // which would hang since stdin is not a TTY. Using `true` as the editor
+  // makes these commands succeed with the default message.
+  process.env.JJ_EDITOR ??= "true";
+  process.env.GIT_EDITOR ??= "true";
+
   // Validate
   validateOrRaise(graph);
 
