@@ -248,6 +248,43 @@ export function renderResumeInfo(checkpoint: { current_node: string; completed_n
 }
 
 /**
+ * Render a pipeline failure summary block for the end-of-run output.
+ */
+export function renderFailureSummary(summary: {
+  failedNode: string;
+  failureClass: string;
+  digest: string;
+  firstFailingCheck?: string;
+  rerunCommand?: string;
+  logsPath?: string;
+  failureReason?: string;
+}): string {
+  const lines = [
+    "",
+    `  ${ANSI.red}${ANSI.bold}Failure Summary${ANSI.reset}`,
+    `  ${ANSI.dim}${"─".repeat(40)}${ANSI.reset}`,
+    `  Node:     ${ANSI.bold}${summary.failedNode}${ANSI.reset}`,
+    `  Class:    ${summary.failureClass}`,
+    `  Error:    ${summary.digest}`,
+  ];
+
+  if (summary.firstFailingCheck) {
+    lines.push(`  Check:    ${summary.firstFailingCheck}`);
+  }
+  if (summary.failureReason && summary.failureReason !== summary.digest) {
+    lines.push(`  Reason:   ${ANSI.dim}${summary.failureReason}${ANSI.reset}`);
+  }
+  if (summary.rerunCommand) {
+    lines.push(`  Rerun:    ${ANSI.dim}${summary.rerunCommand}${ANSI.reset}`);
+  }
+  if (summary.logsPath) {
+    lines.push(`  Logs:     ${ANSI.dim}${summary.logsPath}${ANSI.reset}`);
+  }
+
+  return lines.join("\n");
+}
+
+/**
  * Format milliseconds into a human-readable duration.
  */
 export function formatDuration(ms: number): string {

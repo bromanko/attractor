@@ -1,0 +1,16 @@
+// Minimal workflow that intentionally fails a selfci-like tool step.
+digraph SelfciBlowup {
+  graph [goal="Exercise structured selfci failure reporting"]
+
+  start [shape=Mdiamond, label="Start"]
+  exit  [shape=Msquare,  label="Exit"]
+
+  selfci_check [
+    shape=parallelogram,
+    label="Run selfci (expected to fail)",
+    tool_command="bash -lc 'echo \"selfci smoke run\"; echo \"FAIL  smoke/selfci structured error\" >&2; echo \"Tests: 1 failed, 0 passed, 1 total\" >&2; exit 1'"
+  ]
+
+  // Intentionally no failure routing edge. A failed selfci_check should halt the pipeline.
+  start -> selfci_check -> exit
+}

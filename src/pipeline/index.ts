@@ -5,7 +5,7 @@
 // Types
 export type {
   Graph, GraphNode, GraphEdge, GraphAttrs, NodeAttrs, EdgeAttrs,
-  StageStatus, Outcome, Handler,
+  StageStatus, Outcome, Handler, ToolStageFailure,
   Checkpoint,
   PipelineEvent, PipelineEventKind,
   Diagnostic, Severity,
@@ -40,13 +40,20 @@ export type { JjRunner } from "./workspace.js";
 
 // Engine
 export { runPipeline } from "./engine.js";
-export type { PipelineConfig, PipelineResult } from "./engine.js";
+export type { PipelineConfig, PipelineResult, PipelineFailureSummary } from "./engine.js";
 
 // Interviewers
 export {
   AutoApproveInterviewer, QueueInterviewer,
   CallbackInterviewer, RecordingInterviewer,
 } from "./interviewers.js";
+
+// Tool failure diagnostics
+export {
+  classifyFailure, extractTail, buildDigest,
+  extractFirstFailingCheck, extractSelfciDigest, isSelfciCommand,
+} from "./tool-failure.js";
+export type { ToolFailureClass, ToolFailureDetails } from "./tool-failure.js";
 
 // Stylesheet
 export { applyStylesheet, parseStylesheet } from "./stylesheet.js";

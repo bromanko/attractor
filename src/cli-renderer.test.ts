@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { renderBanner, renderSummary, renderResumeInfo, renderMarkdown, formatDuration, Spinner } from "./cli-renderer.js";
+import { renderBanner, renderSummary, renderResumeInfo, renderMarkdown, renderFailureSummary, formatDuration, Spinner } from "./cli-renderer.js";
 
 // ---------------------------------------------------------------------------
 // renderBanner
@@ -186,6 +186,46 @@ describe("renderResumeInfo", () => {
     expect(info).toContain("Resuming from:");
     expect(info).toContain("implement");
     expect(info).toContain("start → plan");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// renderFailureSummary
+// ---------------------------------------------------------------------------
+
+describe("renderFailureSummary", () => {
+  it("renders all failure summary fields", () => {
+    const output = renderFailureSummary({
+      failedNode: "selfci_check",
+      failureClass: "exit_nonzero",
+      digest: "3 failed, 12 passed, 15 total",
+      firstFailingCheck: "src/auth.test.ts > should validate tokens",
+      rerunCommand: "npm test",
+      logsPath: "/tmp/logs/selfci_check/attempt-1",
+    });
+
+    expect(output).toContain("Failure Summary");
+    expect(output).toContain("selfci_check");
+    expect(output).toContain("exit_nonzero");
+    expect(output).toContain("3 failed, 12 passed, 15 total");
+    expect(output).toContain("src/auth.test.ts > should validate tokens");
+    expect(output).toContain("npm test");
+    expect(output).toContain("/tmp/logs/selfci_check/attempt-1");
+  });
+
+  it("omits optional fields when not present", () => {
+    const output = renderFailureSummary({
+      failedNode: "build",
+      failureClass: "timeout",
+      digest: "Timed out: cargo build",
+    });
+
+    expect(output).toContain("Failure Summary");
+    expect(output).toContain("build");
+    expect(output).toContain("timeout");
+    expect(output).not.toContain("Check:");
+    expect(output).not.toContain("Rerun:");
+    expect(output).not.toContain("Logs:");
   });
 });
 

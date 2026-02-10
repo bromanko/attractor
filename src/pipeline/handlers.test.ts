@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { mkdtemp, readFile, access } from "node:fs/promises";
+import { mkdtemp, readFile, access, stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ToolHandler, WaitForHumanHandler } from "./handlers.js";
@@ -44,11 +45,13 @@ describe("ToolHandler variable expansion", () => {
     const handler = new ToolHandler();
     const context = new Context();
     context.set("workspace.name", "demo-ws");
+    const logsRoot = await mkdtemp(join(tmpdir(), "attractor-handlers-"));
 
     const outcome = await handler.execute(
       makeToolNode("echo \"$workspace.name\""),
       context,
       makeGraph(),
+      logsRoot,
     );
 
     expect(outcome.status).toBe("success");
@@ -58,16 +61,111 @@ describe("ToolHandler variable expansion", () => {
   it("preserves unknown shell variables like $CANDIDATE", async () => {
     const handler = new ToolHandler();
     const context = new Context();
+    const logsRoot = await mkdtemp(join(tmpdir(), "attractor-handlers-"));
 
     const outcome = await handler.execute(
       makeToolNode("CANDIDATE=abc123 && echo \"$CANDIDATE\""),
       context,
       makeGraph(),
+      logsRoot,
     );
 
     expect(outcome.status).toBe("success");
     expect(String(outcome.context_updates?.["tool.output"] ?? "").trim()).toBe("abc123");
   });
+});
+
+describe("ToolHandler artifact storage", () => {
+  it("writes stdout.log, stderr.log, meta.json on success", async () => {
+    const handler = new ToolHandler();
+    const context = new Context();
+    const logsRoot = await mkdtemp(join(tmpdir(), "attractor-handlers-"));
+
+    const outcome = await handler.execute(
+      makeToolNode("echo hello && echo err >&2"),
+      context,
+      makeGraph(),
+      logsRoot,
+    );
+
+    expect(outcome.status).toBe("success");
+
+    const artifactDir = join(logsRoot, "tool", "attempt-1");
+    const stdoutContent = await readFile(join(artifactDir, "stdout.log"), "utf-8");
+    expect(stdoutContent.trim()).toBe("hello");
+
+    const stderrContent = await readFile(join(artifactDir, "stderr.log"), "utf-8");
+    expect(stderrContent.trim()).toBe("err");
+
+    const meta = JSON.parse(await readFile(join(artifactDir, "meta.json"), "utf-8"));
+    expect(meta.exitCode).toBe(0);
+    expect(meta.command).toContain("echo hello");
+    expect(meta.attempt).toBe(1);
+    expect(typeof meta.durationMs).toBe("number");
+  });
+
+  it("returns structured failure payload on non-zero exit", async () => {
+    const handler = new ToolHandler();
+    const context = new Context();
+    const logsRoot = await mkdtemp(join(tmpdir(), "attractor-handlers-"));
+
+    const outcome = await handler.execute(
+      makeToolNode("echo 'some output' && echo 'error detail' >&2 && exit 1"),
+      context,
+      makeGraph(),
+      logsRoot,
+    );
+
+    expect(outcome.status).toBe("fail");
+    expect(outcome.tool_failure).toBeDefined();
+    const tf = outcome.tool_failure!;
+    expect(tf.failureClass).toBe("exit_nonzero");
+    expect(tf.command).toContain("exit 1");
+    expect(tf.digest).toBeTruthy();
+    expect(typeof tf.durationMs).toBe("number");
+    expect(tf.stdoutTail).toContain("some output");
+    expect(tf.stderrTail).toContain("error detail");
+    expect(tf.artifactPaths.stdout).toContain("attempt-1");
+    expect(tf.artifactPaths.stderr).toContain("attempt-1");
+    expect(tf.artifactPaths.meta).toContain("attempt-1");
+
+    // Verify artifacts were written
+    const meta = JSON.parse(await readFile(tf.artifactPaths.meta, "utf-8"));
+    expect(meta.exitCode).not.toBe(0);
+  });
+
+  it("preserves separate artifacts per retry attempt", async () => {
+    const handler = new ToolHandler();
+    const context = new Context();
+    const logsRoot = await mkdtemp(join(tmpdir(), "attractor-handlers-"));
+    const node = makeToolNode("echo attempt-output && exit 1");
+
+    // First attempt
+    await handler.execute(node, context, makeGraph(), logsRoot);
+    // Second attempt
+    await handler.execute(node, context, makeGraph(), logsRoot);
+
+    expect(existsSync(join(logsRoot, "tool", "attempt-1", "stdout.log"))).toBe(true);
+    expect(existsSync(join(logsRoot, "tool", "attempt-2", "stdout.log"))).toBe(true);
+  });
+
+  it("classifies timeout failures distinctly", async () => {
+    const handler = new ToolHandler();
+    const context = new Context();
+    const logsRoot = await mkdtemp(join(tmpdir(), "attractor-handlers-"));
+
+    const outcome = await handler.execute(
+      { id: "tool", attrs: { shape: "parallelogram", tool_command: "sleep 10", timeout: "1" } },
+      context,
+      makeGraph(),
+      logsRoot,
+    );
+
+    expect(outcome.status).toBe("fail");
+    expect(outcome.tool_failure).toBeDefined();
+    expect(outcome.tool_failure!.failureClass).toBe("timeout");
+    expect(outcome.tool_failure!.digest).toContain("Timed out");
+  }, 10_000);
 });
 
 describe("WaitForHumanHandler", () => {

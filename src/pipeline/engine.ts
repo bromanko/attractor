@@ -5,7 +5,7 @@
 
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import type {
   Graph, GraphNode, GraphEdge, Outcome, Context as ContextType,
   Checkpoint, PipelineEvent, PipelineEventKind,
@@ -219,10 +219,24 @@ export type PipelineConfig = {
   abortSignal?: AbortSignal;
 };
 
+/** Summary of the first stage failure in a failed pipeline. */
+export type PipelineFailureSummary = {
+  failedNode: string;
+  failureClass: string;
+  digest: string;
+  firstFailingCheck?: string;
+  rerunCommand?: string;
+  logsPath?: string;
+  /** Failure reason from the handler (available for LLM/codergen failures). */
+  failureReason?: string;
+};
+
 export type PipelineResult = {
   status: "success" | "fail" | "cancelled";
   completedNodes: string[];
   lastOutcome?: Outcome;
+  /** Present when status is "fail" and a stage produced failure details. */
+  failureSummary?: PipelineFailureSummary;
 };
 
 function emit(config: PipelineConfig, kind: PipelineEventKind, data: Record<string, unknown> = {}): void {
@@ -341,6 +355,45 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
 
   const shouldCleanupWorkspace = config.cleanupWorkspaceOnFailure !== false;
 
+  // Helper: build a PipelineFailureSummary from the first failed stage.
+  // Handles tool stages (structured tool_failure) and LLM/codergen stages
+  // (failure_reason only) so both get actionable summaries.
+  function buildFailureSummary(
+    failedNodeId: string,
+    outcome: Outcome | undefined,
+  ): PipelineFailureSummary | undefined {
+    if (!outcome || outcome.status === "success") return undefined;
+
+    // Tool stage failures have rich structured data
+    if (outcome.tool_failure) {
+      const tf = outcome.tool_failure;
+      return {
+        failedNode: failedNodeId,
+        failureClass: tf.failureClass,
+        digest: tf.digest,
+        firstFailingCheck: tf.firstFailingCheck,
+        rerunCommand: tf.command,
+        logsPath: tf.artifactPaths.meta ? dirname(tf.artifactPaths.meta) : undefined,
+      };
+    }
+
+    // Non-tool failures (LLM errors, backend failures, etc.)
+    const reason = outcome.failure_reason ?? "Unknown failure";
+    const failedNode = graph.nodes.find((n) => n.id === failedNodeId);
+    const nodeType = failedNode?.attrs.type ?? failedNode?.attrs.shape ?? "unknown";
+    const isLlm = nodeType === "box" || nodeType === "codergen";
+    const failureClass = isLlm ? "llm_error" : "stage_error";
+    const nodeLogsPath = join(logsRoot, failedNodeId);
+
+    return {
+      failedNode: failedNodeId,
+      failureClass,
+      digest: reason.length > 200 ? reason.slice(0, 200) + "…" : reason,
+      logsPath: nodeLogsPath,
+      failureReason: reason,
+    };
+  }
+
   // Helper: clean up workspace on failure if one was created
   async function cleanupOnFailure(result: PipelineResult): Promise<PipelineResult> {
     if (result.status === "fail" && shouldCleanupWorkspace) {
@@ -402,7 +455,11 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
           }
         }
         emit(config, "pipeline_failed", { error: `Goal gate unsatisfied: ${failedNode.id}` });
-        return cleanupOnFailure({ status: "fail", completedNodes, lastOutcome: nodeOutcomes.get(failedNode.id) });
+        const goalOutcome = nodeOutcomes.get(failedNode.id);
+        return cleanupOnFailure({
+          status: "fail", completedNodes, lastOutcome: goalOutcome,
+          failureSummary: buildFailureSummary(failedNode.id, goalOutcome),
+        });
       }
 
       emit(config, "pipeline_completed", { duration: 0 });
@@ -504,7 +561,15 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
     if (isConditional || outcome.status === "success" || outcome.status === "partial_success") {
       emit(config, "stage_completed", { name: node.id, index: completedNodes.length - 1 });
     } else {
-      emit(config, "stage_failed", { name: node.id, error: outcome.failure_reason });
+      const stageFailedData: Record<string, unknown> = {
+        name: node.id,
+        error: outcome.failure_reason,
+        logsPath: join(logsRoot, node.id),
+      };
+      if (outcome.tool_failure) {
+        stageFailedData.tool_failure = outcome.tool_failure;
+      }
+      emit(config, "stage_failed", stageFailedData);
     }
 
     // Capture workspace tip commit for checkpoint recovery
@@ -568,7 +633,10 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
           }
         }
         emit(config, "pipeline_failed", { error: `Stage failed with no outgoing edge: ${node.id}` });
-        return cleanupOnFailure({ status: "fail", completedNodes, lastOutcome: outcome });
+        return cleanupOnFailure({
+          status: "fail", completedNodes, lastOutcome: outcome,
+          failureSummary: buildFailureSummary(node.id, outcome),
+        });
       }
       // No edge and not failed — pipeline ends
       break;
@@ -583,7 +651,10 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
     const nextNode = graph.nodes.find((n) => n.id === nextEdge.to);
     if (!nextNode) {
       emit(config, "pipeline_failed", { error: `Edge target "${nextEdge.to}" not found` });
-      return cleanupOnFailure({ status: "fail", completedNodes, lastOutcome: outcome });
+      return cleanupOnFailure({
+        status: "fail", completedNodes, lastOutcome: outcome,
+        failureSummary: buildFailureSummary(node.id, outcome),
+      });
     }
 
     currentNode = nextNode;

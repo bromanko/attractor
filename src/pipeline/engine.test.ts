@@ -335,6 +335,124 @@ describe("Pipeline Engine", () => {
     expect(events.some(e => e.kind === "pipeline_failed")).toBe(true);
   });
 
+  it("stage_failed event includes structured tool_failure data for tool stages", async () => {
+    const graph = parseDot(`
+      digraph G {
+        graph [goal="Test"]
+        start [shape=Mdiamond]
+        exit  [shape=Msquare]
+        check [shape=parallelogram, tool_command="echo 'error detail' >&2 && exit 1"]
+        start -> check
+        check -> exit
+      }
+    `);
+
+    const events: PipelineEvent[] = [];
+    const logsRoot = await tempDir();
+    const result = await runPipeline({
+      graph, logsRoot,
+      onEvent: (e) => events.push(e),
+    });
+
+    expect(result.status).toBe("fail");
+    const stageFailedEvent = events.find(e => e.kind === "stage_failed" && e.data.name === "check");
+    expect(stageFailedEvent).toBeDefined();
+    const toolFailure = stageFailedEvent!.data.tool_failure as Record<string, unknown>;
+    expect(toolFailure).toBeDefined();
+    expect(toolFailure.failureClass).toBe("exit_nonzero");
+    expect(toolFailure.digest).toBeTruthy();
+    expect(toolFailure.command).toContain("exit 1");
+  });
+
+  it("pipeline failure result includes failureSummary for tool stage failures", async () => {
+    const graph = parseDot(`
+      digraph G {
+        graph [goal="Test"]
+        start [shape=Mdiamond]
+        exit  [shape=Msquare]
+        check [shape=parallelogram, tool_command="echo failing && exit 1"]
+        start -> check
+        check -> exit
+      }
+    `);
+
+    const logsRoot = await tempDir();
+    const result = await runPipeline({ graph, logsRoot });
+
+    expect(result.status).toBe("fail");
+    expect(result.failureSummary).toBeDefined();
+    expect(result.failureSummary!.failedNode).toBe("check");
+    expect(result.failureSummary!.failureClass).toBe("exit_nonzero");
+    expect(result.failureSummary!.digest).toBeTruthy();
+    expect(result.failureSummary!.rerunCommand).toContain("exit 1");
+    // logsPath should be the specific attempt directory, not the root
+    expect(result.failureSummary!.logsPath).toContain("check");
+    expect(result.failureSummary!.logsPath).toContain("attempt-1");
+    expect(result.failureSummary!.logsPath).not.toMatch(/meta\.json$/);
+  });
+
+  it("pipeline failure result includes failureSummary for codergen (LLM) failures", async () => {
+    const graph = parseDot(`
+      digraph G {
+        graph [goal="Test"]
+        start [shape=Mdiamond]
+        exit  [shape=Msquare]
+        review [shape=box, prompt="Review the code"]
+        start -> review
+        review -> exit
+      }
+    `);
+
+    const failingBackend: CodergenBackend = {
+      async run() {
+        return { status: "fail", failure_reason: "LLM error: rate limit exceeded" } as Outcome;
+      },
+    };
+
+    const logsRoot = await tempDir();
+    const result = await runPipeline({ graph, logsRoot, backend: failingBackend });
+
+    expect(result.status).toBe("fail");
+    expect(result.failureSummary).toBeDefined();
+    expect(result.failureSummary!.failedNode).toBe("review");
+    expect(result.failureSummary!.failureClass).toBe("llm_error");
+    expect(result.failureSummary!.digest).toContain("rate limit exceeded");
+    expect(result.failureSummary!.failureReason).toBe("LLM error: rate limit exceeded");
+    // logsPath should point to the node's log directory
+    expect(result.failureSummary!.logsPath).toContain("review");
+    expect(result.failureSummary!.logsPath).toBe(join(logsRoot, "review"));
+  });
+
+  it("stage_failed event includes logsPath for all failure types", async () => {
+    const graph = parseDot(`
+      digraph G {
+        graph [goal="Test"]
+        start [shape=Mdiamond]
+        exit  [shape=Msquare]
+        plan [shape=box, prompt="Make a plan"]
+        start -> plan
+        plan -> exit
+      }
+    `);
+
+    const failingBackend: CodergenBackend = {
+      async run() {
+        return { status: "fail", failure_reason: "API unavailable" } as Outcome;
+      },
+    };
+
+    const events: PipelineEvent[] = [];
+    const logsRoot = await tempDir();
+    await runPipeline({
+      graph, logsRoot, backend: failingBackend,
+      onEvent: (e) => events.push(e),
+    });
+
+    const stageFailedEvent = events.find(e => e.kind === "stage_failed" && e.data.name === "plan");
+    expect(stageFailedEvent).toBeDefined();
+    expect(stageFailedEvent!.data.logsPath).toBe(join(logsRoot, "plan"));
+  });
+
   it("follows explicit failure edge when node fails", async () => {
     const graph = parseDot(`
       digraph G {

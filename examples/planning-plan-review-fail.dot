@@ -1,0 +1,40 @@
+// Simulates the planning workflow where plan_review returns [STATUS: fail]
+// and the pipeline halts because there is no explicit failure-routing edge.
+digraph PlanningPlanReviewFail {
+  graph [goal="Exercise failed LLM review handling"]
+  node [shape=box]
+
+  start        [shape=Mdiamond]
+  exit         [shape=Msquare]
+
+  plan [
+    label="Plan",
+    prompt="Write a short implementation plan for: $goal"
+  ]
+
+  plan_review [
+    label="Review plan (LLM)",
+    prompt="You are simulating a failed planning review for test purposes.\n\
+Return exactly:\n\
+[STATUS: fail]\n\
+[FAILURE_REASON: Intentional plan_review failure for structured error reporting test.]"
+  ]
+
+  // Included to mirror the real planning workflow shape, but this should not run
+  // when plan_review returns fail.
+  human_review [
+    shape=hexagon,
+    label="Review plan + critique",
+    prompt="Approve or revise"
+  ]
+
+  plan_revise [
+    label="Revise plan",
+    prompt="Revise the plan"
+  ]
+
+  start -> plan -> plan_review -> human_review
+  human_review -> exit        [label="Accept"]
+  human_review -> plan_revise [label="Revise"]
+  plan_revise  -> human_review
+}

@@ -75,6 +75,28 @@ export type Graph = {
 /** Stage execution outcome status. */
 export type StageStatus = "success" | "fail" | "partial_success" | "retry" | "skipped" | "cancelled";
 
+/** Known failure class values for tool stages. */
+export type ToolFailureClass = "exit_nonzero" | "timeout" | "spawn_error";
+
+/** Structured failure details from a tool stage. */
+export type ToolStageFailure = {
+  failureClass: ToolFailureClass;
+  digest: string;
+  command: string;
+  cwd?: string;
+  exitCode?: number | null;
+  signal?: string | null;
+  durationMs: number;
+  stdoutTail: string;
+  stderrTail: string;
+  artifactPaths: {
+    stdout: string;
+    stderr: string;
+    meta: string;
+  };
+  firstFailingCheck?: string;
+};
+
 /** The result of executing a node handler. */
 export type Outcome = {
   status: StageStatus;
@@ -83,6 +105,8 @@ export type Outcome = {
   context_updates?: Record<string, unknown>;
   notes?: string;
   failure_reason?: string;
+  /** Structured failure details (populated by tool stages). */
+  tool_failure?: ToolStageFailure;
 };
 
 /** Handler interface — every node handler implements this. */

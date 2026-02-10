@@ -65,6 +65,7 @@ vi.mock("./cli-renderer.js", () => {
     renderSummary: vi.fn(() => "SUMMARY"),
     renderResumeInfo: vi.fn(() => "RESUME"),
     renderMarkdown: vi.fn((s: string) => s),
+    renderFailureSummary: vi.fn(() => "FAILURE_SUMMARY"),
     formatDuration: vi.fn(() => "1ms"),
     Spinner,
   };
@@ -143,6 +144,146 @@ describe("cmdRun spinner gating around human stages", () => {
     expect(spinner.start).toHaveBeenCalledWith("build", undefined);
     expect(spinner.stop).toHaveBeenCalledTimes(1);
     expect(spinner.stop).toHaveBeenCalledWith("success");
+  });
+});
+
+describe("cmdRun structured failure output", () => {
+  let tempDir: string;
+  let dotPath: string;
+  let logSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "attractor-cli-test-"));
+    dotPath = join(tempDir, "pipeline.dot");
+    await writeFile(dotPath, "digraph G {}", "utf-8");
+    currentEvents = [];
+    runPipelineImpl = undefined;
+    currentGraph = {
+      name: "test",
+      attrs: {},
+      nodes: [{ id: "check", attrs: { shape: "parallelogram" } }],
+      edges: [],
+    };
+    spinnerInstances.length = 0;
+    logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  });
+
+  afterEach(async () => {
+    logSpy.mockRestore();
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it("stage_failed uses tool_failure digest + log pointer", async () => {
+    currentEvents = [
+      {
+        kind: "stage_started",
+        data: { name: "check" },
+      },
+      {
+        kind: "stage_failed",
+        data: {
+          name: "check",
+          error: "fallback error",
+          tool_failure: {
+            failureClass: "exit_nonzero",
+            digest: "3 tests failed",
+            command: "npm test",
+            artifactPaths: {
+              stdout: "/tmp/logs/check/attempt-1/stdout.log",
+              stderr: "/tmp/logs/check/attempt-1/stderr.log",
+              meta: "/tmp/logs/check/attempt-1/meta.json",
+            },
+          },
+        },
+      },
+      { kind: "pipeline_completed", data: {} },
+    ];
+
+    await cmdRun(dotPath, { "approve-all": true });
+
+    expect(spinnerInstances).toHaveLength(1);
+    const spinner = spinnerInstances[0];
+    // Spinner should stop with the structured digest, not the raw error
+    expect(spinner.stop).toHaveBeenCalledWith(
+      "fail",
+      expect.stringContaining("3 tests failed"),
+    );
+    expect(spinner.stop).toHaveBeenCalledWith(
+      "fail",
+      expect.stringContaining("logs:"),
+    );
+  });
+
+  it("stage_failed for non-tool stages includes error + logs path", async () => {
+    currentEvents = [
+      {
+        kind: "stage_started",
+        data: { name: "plan_review" },
+      },
+      {
+        kind: "stage_failed",
+        data: {
+          name: "plan_review",
+          error: "LLM error: rate limit exceeded",
+          logsPath: "/tmp/logs/plan_review",
+        },
+      },
+      { kind: "pipeline_completed", data: {} },
+    ];
+    currentGraph = {
+      name: "test",
+      attrs: {},
+      nodes: [{ id: "plan_review", attrs: { shape: "box" } }],
+      edges: [],
+    };
+
+    await cmdRun(dotPath, { "approve-all": true });
+
+    expect(spinnerInstances).toHaveLength(1);
+    const spinner = spinnerInstances[0];
+    expect(spinner.stop).toHaveBeenCalledWith(
+      "fail",
+      expect.stringContaining("rate limit exceeded"),
+    );
+    expect(spinner.stop).toHaveBeenCalledWith(
+      "fail",
+      expect.stringContaining("logs:"),
+    );
+    expect(spinner.stop).toHaveBeenCalledWith(
+      "fail",
+      expect.stringContaining("plan_review"),
+    );
+  });
+
+  it("renders failure summary when pipeline result includes failureSummary", async () => {
+    const { renderFailureSummary } = await import("./cli-renderer.js");
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {}) as any);
+
+    runPipelineImpl = async (config: any) => {
+      return {
+        status: "fail",
+        completedNodes: ["start", "check"],
+        failureSummary: {
+          failedNode: "check",
+          failureClass: "exit_nonzero",
+          digest: "2 failed",
+          rerunCommand: "npm test",
+          logsPath: "/tmp/logs/check/attempt-1",
+        },
+      };
+    };
+
+    await cmdRun(dotPath, { "approve-all": true });
+
+    expect(renderFailureSummary).toHaveBeenCalledWith({
+      failedNode: "check",
+      failureClass: "exit_nonzero",
+      digest: "2 failed",
+      rerunCommand: "npm test",
+      logsPath: "/tmp/logs/check/attempt-1",
+    });
+
+    exitSpy.mockRestore();
   });
 });
 

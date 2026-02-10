@@ -24,6 +24,7 @@ import {
   renderSummary,
   renderResumeInfo,
   renderMarkdown,
+  renderFailureSummary,
   Spinner,
   formatDuration,
 } from "./cli-renderer.js";
@@ -322,16 +323,33 @@ export async function cmdRun(
           }
           case "stage_failed": {
             const stageName = String(d.name ?? "");
-            const errorMsg = d.error ? String(d.error) : undefined;
-            // Render failure reason as markdown if it contains markdown formatting
-            const rendered = errorMsg && MARKDOWN_HINT_RE.test(errorMsg)
-              ? renderMarkdown(errorMsg)
-              : errorMsg;
+            const toolFailure = d.tool_failure as Record<string, unknown> | undefined;
+            const stageLogsPath = d.logsPath ? String(d.logsPath) : undefined;
+            // Use structured digest when available, otherwise fall back to error string
+            let failLine: string | undefined;
+            if (toolFailure) {
+              failLine = String(toolFailure.digest ?? "");
+              const artifactPaths = toolFailure.artifactPaths as Record<string, string> | undefined;
+              const logsDir = artifactPaths?.meta
+                ? artifactPaths.meta.replace(/[/\\]meta\.json$/, "")
+                : stageLogsPath;
+              if (logsDir) failLine += ` (logs: ${logsDir})`;
+            } else {
+              const errorMsg = d.error ? String(d.error) : undefined;
+              failLine = errorMsg && MARKDOWN_HINT_RE.test(errorMsg)
+                ? renderMarkdown(errorMsg)
+                : errorMsg;
+              if (stageLogsPath) {
+                failLine = failLine
+                  ? `${failLine} (logs: ${stageLogsPath})`
+                  : `(logs: ${stageLogsPath})`;
+              }
+            }
             if (spinnerStage === stageName && spinner.isRunning()) {
-              spinner.stop("fail", rendered);
+              spinner.stop("fail", failLine);
               spinnerStage = null;
             } else {
-              console.log(`  ✘ ${stageName}${rendered ? ` — ${rendered}` : ""}`);
+              console.log(`  ✘ ${stageName}${failLine ? ` — ${failLine}` : ""}`);
             }
             break;
           }
@@ -376,6 +394,10 @@ export async function cmdRun(
     logsRoot: resolve(logsRoot),
     elapsedMs: Date.now() - startTime,
   }));
+
+  if (result.failureSummary) {
+    console.log(renderFailureSummary(result.failureSummary));
+  }
 
   if (result.status === "cancelled") {
     console.log("  Pipeline was cancelled. Checkpoint saved for resume.");

@@ -371,8 +371,19 @@ export class ConditionalHandler implements Handler {
 // 4.10 Tool Handler
 // ---------------------------------------------------------------------------
 
+import {
+  classifyFailure,
+  extractTail,
+  buildDigest,
+  extractFirstFailingCheck,
+  isSelfciCommand,
+  type ToolFailureDetails,
+} from "./tool-failure.js";
+
 export class ToolHandler implements Handler {
-  async execute(node: GraphNode, context: Context, graph: Graph): Promise<Outcome> {
+  private _attemptCounters = new Map<string, number>();
+
+  async execute(node: GraphNode, context: Context, graph: Graph, logsRoot: string): Promise<Outcome> {
     const rawCommand = node.attrs.tool_command as string | undefined;
     if (!rawCommand) {
       return { status: "fail", failure_reason: "No tool_command specified" };
@@ -384,13 +395,86 @@ export class ToolHandler implements Handler {
     // Use workspace path as cwd if a workspace is active
     const cwd = context.getString(WS_CONTEXT.PATH) || undefined;
 
+    // Track attempt number for per-attempt artifact storage
+    const attemptNum = (this._attemptCounters.get(node.id) ?? 0) + 1;
+    this._attemptCounters.set(node.id, attemptNum);
+
+    const artifactDir = logsRoot
+      ? join(logsRoot, node.id, `attempt-${attemptNum}`)
+      : undefined;
+
+    const startTime = Date.now();
+
     const { exec } = await import("node:child_process");
     return new Promise((resolve) => {
       const env = { ...process.env, JJ_EDITOR: "true", GIT_EDITOR: "true" };
       const timeoutMs = node.attrs.timeout ? parseInt(String(node.attrs.timeout), 10) * 1000 : 300_000;
-      exec(command, { timeout: timeoutMs, cwd, env }, (error, stdout, stderr) => {
+      exec(command, { timeout: timeoutMs, cwd, env, maxBuffer: 10 * 1024 * 1024 }, async (error, stdout, stderr) => {
+        const durationMs = Date.now() - startTime;
+
+        // Write per-attempt artifacts
+        const artifactPaths = { stdout: "", stderr: "", meta: "" };
+        if (artifactDir) {
+          try {
+            await mkdir(artifactDir, { recursive: true });
+            artifactPaths.stdout = join(artifactDir, "stdout.log");
+            artifactPaths.stderr = join(artifactDir, "stderr.log");
+            artifactPaths.meta = join(artifactDir, "meta.json");
+
+            await writeFile(artifactPaths.stdout, stdout, "utf-8");
+            await writeFile(artifactPaths.stderr, stderr, "utf-8");
+            await writeFile(artifactPaths.meta, JSON.stringify({
+              command,
+              cwd: cwd ?? process.cwd(),
+              exitCode: error ? (error as any).code ?? null : 0,
+              signal: error ? (error as any).signal ?? null : null,
+              durationMs,
+              attempt: attemptNum,
+              timestamp: new Date().toISOString(),
+            }, null, 2), "utf-8");
+          } catch {
+            // Best effort — don't fail the handler if artifact writing fails
+          }
+        }
+
         if (error) {
-          resolve({ status: "fail", failure_reason: String(error) });
+          const typedError = error as Error & { code?: string | number; killed?: boolean; signal?: string | null };
+          const failureClass = classifyFailure(typedError as any);
+          const exitCode = typeof typedError.code === "number" ? typedError.code : null;
+          const signal = typedError.signal ?? null;
+
+          const digest = buildDigest({
+            command,
+            failureClass,
+            exitCode,
+            signal,
+            stdout,
+            stderr,
+          });
+
+          const firstFailingCheck = isSelfciCommand(command)
+            ? extractFirstFailingCheck(stdout, stderr)
+            : undefined;
+
+          const toolFailure: ToolFailureDetails = {
+            failureClass,
+            digest,
+            command,
+            cwd: cwd ?? process.cwd(),
+            exitCode,
+            signal,
+            durationMs,
+            stdoutTail: extractTail(stdout),
+            stderrTail: extractTail(stderr),
+            artifactPaths,
+            firstFailingCheck,
+          };
+
+          resolve({
+            status: "fail",
+            failure_reason: digest,
+            tool_failure: toolFailure,
+          });
         } else {
           resolve({
             status: "success",
