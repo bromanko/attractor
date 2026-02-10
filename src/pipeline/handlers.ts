@@ -201,9 +201,11 @@ export class ExitHandler implements Handler {
 
 export class CodergenHandler implements Handler {
   private _backend: CodergenBackend | undefined;
+  private _signal: AbortSignal | undefined;
 
-  constructor(backend?: CodergenBackend) {
+  constructor(backend?: CodergenBackend, signal?: AbortSignal) {
     this._backend = backend;
+    this._signal = signal;
   }
 
   async execute(node: GraphNode, context: Context, graph: Graph, logsRoot: string): Promise<Outcome> {
@@ -217,7 +219,7 @@ export class CodergenHandler implements Handler {
     let responseText: string;
     if (this._backend) {
       try {
-        const result = await this._backend.run(node, prompt, context);
+        const result = await this._backend.run(node, prompt, context, { signal: this._signal });
         if (typeof result === "object" && "status" in result) {
           await writeStatus(stageDir, result as Outcome);
           return result as Outcome;
@@ -409,8 +411,8 @@ export class HandlerRegistry {
   private _handlers = new Map<string, Handler>();
   private _defaultHandler: Handler;
 
-  constructor(opts?: { backend?: CodergenBackend; interviewer?: Interviewer; jjRunner?: JjRunner }) {
-    this._defaultHandler = new CodergenHandler(opts?.backend);
+  constructor(opts?: { backend?: CodergenBackend; interviewer?: Interviewer; jjRunner?: JjRunner; abortSignal?: AbortSignal }) {
+    this._defaultHandler = new CodergenHandler(opts?.backend, opts?.abortSignal);
 
     this.register("start", new StartHandler());
     this.register("exit", new ExitHandler());

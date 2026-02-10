@@ -246,16 +246,27 @@ export async function cmdRun(
 
   const nodeById = new Map(graph.nodes.map((n) => [n.id, n] as const));
 
+  // Set up cooperative cancellation
+  const abortController = new AbortController();
+  const onSignal = () => {
+    abortController.abort();
+  };
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+
   const startTime = Date.now();
   const spinner = new Spinner();
   let spinnerStage: string | null = null;
 
-  const result = await runPipeline({
+  let result;
+  try {
+  result = await runPipeline({
     graph,
     logsRoot,
     backend,
     interviewer,
     checkpoint,
+    abortSignal: abortController.signal,
     onEvent(event: PipelineEvent) {
       const d = event.data as Record<string, unknown>;
       if (verbose) {
@@ -338,10 +349,26 @@ export async function cmdRun(
           case "pipeline_failed":
             console.log(`\n  ❌ Pipeline failed: ${d.error}`);
             break;
+          case "pipeline_cancelled":
+            if (spinnerStage != null && spinner.isRunning()) {
+              spinner.stop("fail", "cancelled");
+              spinnerStage = null;
+            }
+            console.log(`\n  ⚠️  Pipeline cancelled`);
+            break;
         }
       }
     },
   });
+  } finally {
+    // Clean up signal handlers to prevent leaks across runs/tests
+    process.removeListener("SIGINT", onSignal);
+    process.removeListener("SIGTERM", onSignal);
+    // Stop spinner if still running
+    if (spinnerStage != null && spinner.isRunning()) {
+      spinner.stop("fail");
+    }
+  }
 
   console.log(renderSummary({
     status: result.status,
@@ -350,6 +377,10 @@ export async function cmdRun(
     elapsedMs: Date.now() - startTime,
   }));
 
+  if (result.status === "cancelled") {
+    console.log("  Pipeline was cancelled. Checkpoint saved for resume.");
+    process.exit(130);
+  }
   if (result.status === "fail") process.exit(1);
 }
 

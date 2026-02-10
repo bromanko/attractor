@@ -144,8 +144,22 @@ function selectEdge(
 // Retry policy (Section 3.5-3.6)
 // ---------------------------------------------------------------------------
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason ?? new DOMException("The operation was aborted.", "AbortError"));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    function onAbort() {
+      clearTimeout(timer);
+      reject(signal!.reason ?? new DOMException("The operation was aborted.", "AbortError"));
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function retryDelay(attempt: number): number {
@@ -201,10 +215,12 @@ export type PipelineConfig = {
   cleanupWorkspaceOnFailure?: boolean;
   /** Custom jj runner for workspace operations (useful for testing). */
   jjRunner?: JjRunner;
+  /** Abort signal for cooperative cancellation. */
+  abortSignal?: AbortSignal;
 };
 
 export type PipelineResult = {
-  status: "success" | "fail";
+  status: "success" | "fail" | "cancelled";
   completedNodes: string[];
   lastOutcome?: Outcome;
 };
@@ -239,10 +255,13 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
   if (graph.attrs.goal) context.set("graph.goal", graph.attrs.goal);
   if (graph.attrs.label) context.set("graph.label", graph.attrs.label);
 
+  const abortSignal = config.abortSignal;
+
   const registry = new HandlerRegistry({
     backend: config.backend,
     interviewer: config.interviewer,
     jjRunner: config.jjRunner,
+    abortSignal,
   });
 
   const completedNodes: string[] = [];
@@ -330,8 +349,38 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
     return result;
   }
 
+  // Helper: check if cancelled and save checkpoint + emit event
+  async function checkCancelled(
+    currentNodeId: string,
+  ): Promise<PipelineResult | null> {
+    if (!abortSignal?.aborted) return null;
+
+    // Save checkpoint for resume
+    const checkpoint: Checkpoint = {
+      timestamp: new Date().toISOString(),
+      current_node: currentNodeId,
+      completed_nodes: [...completedNodes],
+      node_retries: Object.fromEntries(nodeRetries),
+      context_values: context.snapshot(),
+      logs: [...context.logs],
+    };
+    await writeFile(join(logsRoot, "checkpoint.json"), JSON.stringify(checkpoint, null, 2), "utf-8");
+    emit(config, "checkpoint_saved", { node_id: currentNodeId });
+    emit(config, "pipeline_cancelled", { reason: "aborted", node_id: currentNodeId });
+
+    return {
+      status: "cancelled",
+      completedNodes,
+      lastOutcome: { status: "cancelled", failure_reason: "Pipeline cancelled" },
+    };
+  }
+
   // Main execution loop
   while (true) {
+    // Check for cancellation before executing next stage
+    const cancelResult = await checkCancelled(currentNode.id);
+    if (cancelResult) return cancelResult;
+
     const node = currentNode;
 
     // Check for terminal node
@@ -372,7 +421,18 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
       try {
         outcome = await handler.execute(node, context, graph, logsRoot);
       } catch (err) {
+        // Check if this was a cancellation
+        if (abortSignal?.aborted) {
+          const cr = await checkCancelled(node.id);
+          if (cr) return cr;
+        }
         outcome = { status: "fail", failure_reason: String(err) };
+      }
+
+      // Check for cancellation after stage completion
+      if (abortSignal?.aborted) {
+        const cr = await checkCancelled(node.id);
+        if (cr) return cr;
       }
 
       if (outcome.status === "success" || outcome.status === "partial_success") {
@@ -384,7 +444,13 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
         const count = (nodeRetries.get(node.id) ?? 0) + 1;
         nodeRetries.set(node.id, count);
         emit(config, "stage_retrying", { name: node.id, attempt, delay: retryDelay(attempt) });
-        await sleep(retryDelay(attempt));
+        try {
+          await sleep(retryDelay(attempt), abortSignal);
+        } catch {
+          // Abort during backoff — exit immediately
+          const cr = await checkCancelled(node.id);
+          if (cr) return cr;
+        }
         continue;
       }
 
@@ -393,7 +459,13 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
           const count = (nodeRetries.get(node.id) ?? 0) + 1;
           nodeRetries.set(node.id, count);
           emit(config, "stage_retrying", { name: node.id, attempt, delay: retryDelay(attempt) });
-          await sleep(retryDelay(attempt));
+          try {
+            await sleep(retryDelay(attempt), abortSignal);
+          } catch {
+            // Abort during backoff — exit immediately
+            const cr = await checkCancelled(node.id);
+            if (cr) return cr;
+          }
           continue;
         }
         // Retries exhausted
@@ -463,6 +535,12 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
     };
     await writeFile(join(logsRoot, "checkpoint.json"), JSON.stringify(checkpoint, null, 2), "utf-8");
     emit(config, "checkpoint_saved", { node_id: node.id });
+
+    // Check for cancellation before scheduling next stage
+    {
+      const cr = await checkCancelled(node.id);
+      if (cr) return cr;
+    }
 
     // Select next edge (Section 3.3)
     // On failure, non-routing nodes should only continue if there's an

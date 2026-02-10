@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, access } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { runPipeline } from "./engine.js";
 import { parseDot } from "./dot-parser.js";
 import type { CodergenBackend, Outcome, PipelineEvent } from "./types.js";
@@ -399,5 +400,234 @@ describe("Pipeline Engine", () => {
     expect(result.completedNodes).toContain("gate");
     expect(result.completedNodes).toContain("revise");
     expect(result.completedNodes).not.toContain("good");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cancellation tests
+// ---------------------------------------------------------------------------
+
+describe("Pipeline Cancellation", () => {
+  it("abort before first stage exits immediately as cancelled", async () => {
+    const graph = parseDot(`
+      digraph Test {
+        graph [goal="Test"]
+        start [shape=Mdiamond]
+        exit [shape=Msquare]
+        work [shape=box, prompt="Work"]
+        start -> work -> exit
+      }
+    `);
+
+    const controller = new AbortController();
+    controller.abort(); // Pre-abort
+
+    const events: PipelineEvent[] = [];
+    const logsRoot = await tempDir();
+    const result = await runPipeline({
+      graph,
+      logsRoot,
+      backend: successBackend,
+      abortSignal: controller.signal,
+      onEvent: (e) => events.push(e),
+    });
+
+    expect(result.status).toBe("cancelled");
+    expect(result.lastOutcome?.status).toBe("cancelled");
+    // Should not have executed any non-start stages
+    expect(result.completedNodes).not.toContain("work");
+    expect(events.some(e => e.kind === "pipeline_cancelled")).toBe(true);
+  });
+
+  it("abort during active stage prevents downstream execution", async () => {
+    const controller = new AbortController();
+    const executedNodes: string[] = [];
+
+    const slowBackend: CodergenBackend = {
+      async run(node) {
+        executedNodes.push(node.id);
+        if (node.id === "work") {
+          // Abort during this stage
+          controller.abort();
+        }
+        return `Done: ${node.id}`;
+      },
+    };
+
+    const graph = parseDot(`
+      digraph Test {
+        graph [goal="Test"]
+        start [shape=Mdiamond]
+        exit [shape=Msquare]
+        work [shape=box, prompt="Work"]
+        next [shape=box, prompt="Next"]
+        start -> work -> next -> exit
+      }
+    `);
+
+    const logsRoot = await tempDir();
+    const result = await runPipeline({
+      graph,
+      logsRoot,
+      backend: slowBackend,
+      abortSignal: controller.signal,
+    });
+
+    expect(result.status).toBe("cancelled");
+    expect(executedNodes).toContain("work");
+    expect(executedNodes).not.toContain("next");
+  });
+
+  it("abort during retry backoff exits without waiting full delay", async () => {
+    const controller = new AbortController();
+    let retryCount = 0;
+
+    const failingBackend: CodergenBackend = {
+      async run(node) {
+        retryCount++;
+        if (retryCount === 1) {
+          // Schedule abort after a short delay (during backoff)
+          setTimeout(() => controller.abort(), 10);
+        }
+        return { status: "fail", failure_reason: "test fail" } as Outcome;
+      },
+    };
+
+    const graph = parseDot(`
+      digraph Test {
+        graph [goal="Test"]
+        start [shape=Mdiamond]
+        exit [shape=Msquare]
+        work [shape=box, prompt="Work", max_retries=5]
+        start -> work -> exit
+      }
+    `);
+
+    const logsRoot = await tempDir();
+    const startTime = Date.now();
+    const result = await runPipeline({
+      graph,
+      logsRoot,
+      backend: failingBackend,
+      abortSignal: controller.signal,
+    });
+    const elapsed = Date.now() - startTime;
+
+    expect(result.status).toBe("cancelled");
+    // Should have exited quickly, not waited for all retries
+    // With 5 retries and exponential backoff, full run would take >6s
+    expect(elapsed).toBeLessThan(3000);
+  });
+
+  it("cancellation emits pipeline_cancelled event", async () => {
+    const controller = new AbortController();
+    const events: PipelineEvent[] = [];
+
+    const abortBackend: CodergenBackend = {
+      async run(node) {
+        controller.abort();
+        return `Done: ${node.id}`;
+      },
+    };
+
+    const graph = parseDot(`
+      digraph Test {
+        graph [goal="Test"]
+        start [shape=Mdiamond]
+        exit [shape=Msquare]
+        work [shape=box, prompt="Work"]
+        start -> work -> exit
+      }
+    `);
+
+    const logsRoot = await tempDir();
+    await runPipeline({
+      graph,
+      logsRoot,
+      backend: abortBackend,
+      abortSignal: controller.signal,
+      onEvent: (e) => events.push(e),
+    });
+
+    const cancelEvent = events.find(e => e.kind === "pipeline_cancelled");
+    expect(cancelEvent).toBeDefined();
+    expect(cancelEvent!.data.reason).toBe("aborted");
+  });
+
+  it("checkpoint persisted on cancel", async () => {
+    const controller = new AbortController();
+
+    const abortBackend: CodergenBackend = {
+      async run(node) {
+        controller.abort();
+        return `Done: ${node.id}`;
+      },
+    };
+
+    const graph = parseDot(`
+      digraph Test {
+        graph [goal="Test"]
+        start [shape=Mdiamond]
+        exit [shape=Msquare]
+        work [shape=box, prompt="Work"]
+        start -> work -> exit
+      }
+    `);
+
+    const logsRoot = await tempDir();
+    await runPipeline({
+      graph,
+      logsRoot,
+      backend: abortBackend,
+      abortSignal: controller.signal,
+    });
+
+    // Checkpoint should exist
+    const cpPath = join(logsRoot, "checkpoint.json");
+    const cpJson = await readFile(cpPath, "utf-8");
+    const checkpoint = JSON.parse(cpJson);
+    expect(checkpoint.current_node).toBeDefined();
+    expect(checkpoint.completed_nodes).toBeDefined();
+  });
+
+  it("workspace is not emergency-cleaned on cancel", async () => {
+    const controller = new AbortController();
+    let cleanupCalled = false;
+
+    const abortBackend: CodergenBackend = {
+      async run(node, _prompt, context) {
+        if (node.id === "work") {
+          // Simulate workspace context being set
+          context.set("workspace.path", "/tmp/fake-ws");
+          context.set("workspace.name", "fake-ws");
+          controller.abort();
+        }
+        return `Done: ${node.id}`;
+      },
+    };
+
+    const graph = parseDot(`
+      digraph Test {
+        graph [goal="Test"]
+        start [shape=Mdiamond]
+        exit [shape=Msquare]
+        work [shape=box, prompt="Work"]
+        start -> work -> exit
+      }
+    `);
+
+    const logsRoot = await tempDir();
+    const result = await runPipeline({
+      graph,
+      logsRoot,
+      backend: abortBackend,
+      abortSignal: controller.signal,
+      cleanupWorkspaceOnFailure: true,
+      jjRunner: async () => { cleanupCalled = true; return ""; },
+    });
+
+    expect(result.status).toBe("cancelled");
+    // Emergency cleanup should NOT have been called since this is cancellation, not failure
+    expect(cleanupCalled).toBe(false);
   });
 });

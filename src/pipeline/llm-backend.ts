@@ -10,7 +10,7 @@ import { resolve } from "node:path";
 import { homedir } from "node:os";
 import type { Client, GenerateOptions, ToolDefinition } from "../llm/index.js";
 import { generate } from "../llm/index.js";
-import type { CodergenBackend, GraphNode, Outcome } from "./types.js";
+import type { CodergenBackend, GraphNode, Outcome, BackendRunOptions } from "./types.js";
 import { Context } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -189,6 +189,7 @@ export class LlmBackend implements CodergenBackend {
     node: GraphNode,
     prompt: string,
     context: Context,
+    _options?: BackendRunOptions,
   ): Promise<Outcome> {
     // Resolve per-node overrides
     const model =

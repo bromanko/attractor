@@ -713,3 +713,137 @@ describe("PiBackend", () => {
     expect(outcome.status).toBe("success");
   });
 });
+
+// ---------------------------------------------------------------------------
+// PiBackend cancellation tests
+// ---------------------------------------------------------------------------
+
+describe("PiBackend cancellation", () => {
+  it("pre-aborted signal returns cancelled outcome", async () => {
+    const { backend } = createTestBackend("This should not be reached");
+    const controller = new AbortController();
+    controller.abort();
+
+    const outcome = await backend.run(
+      makeNode(),
+      "Code it",
+      new Context(),
+      { signal: controller.signal },
+    );
+
+    expect(outcome.status).toBe("cancelled");
+    expect(outcome.failure_reason).toContain("Cancelled");
+  });
+
+  it("mid-flight abort triggers cancel/dispose path", async () => {
+    const disposeSpy = vi.fn();
+    let resolvePrompt: (() => void) | undefined;
+
+    const factory = async (opts: CreateAgentSessionOptions): Promise<CreateAgentSessionResult> => ({
+      session: {
+        prompt: vi.fn(() => new Promise<void>((resolve) => {
+          resolvePrompt = resolve;
+        })),
+        getLastAssistantText: vi.fn(() => "ok"),
+        getSessionStats: vi.fn(() => ({
+          sessionFile: undefined,
+          sessionId: "test",
+          userMessages: 1,
+          assistantMessages: 1,
+          toolCalls: 0,
+          toolResults: 0,
+          totalMessages: 2,
+          tokens: { input: 10, output: 20, cacheRead: 0, cacheWrite: 0, total: 30 },
+          cost: 0.001,
+        })),
+        subscribe: vi.fn(() => () => {}),
+        dispose: disposeSpy,
+      } as any,
+      extensionsResult: { extensions: [], errors: [], warnings: [] } as any,
+    });
+
+    const backend = new PiBackend({
+      model: "test-model",
+      provider: "test-provider",
+      cwd: "/tmp/test",
+      modelRegistry: mockModelRegistry(),
+      _sessionFactory: factory,
+    });
+
+    const controller = new AbortController();
+
+    // Run in background and abort mid-flight
+    const resultPromise = backend.run(
+      makeNode(),
+      "Code it",
+      new Context(),
+      { signal: controller.signal },
+    );
+
+    // Let the prompt start then abort
+    await new Promise(r => setTimeout(r, 10));
+    controller.abort();
+    // Resolve the prompt so it completes
+    resolvePrompt?.();
+
+    const outcome = await resultPromise;
+
+    expect(outcome.status).toBe("cancelled");
+    // dispose should have been called (at least once from abort handler or finally)
+    expect(disposeSpy).toHaveBeenCalled();
+  });
+
+  it("no duplicate disposal — dispose called exactly once on normal flow", async () => {
+    const disposeSpy = vi.fn();
+    const factory = async (opts: CreateAgentSessionOptions): Promise<CreateAgentSessionResult> => ({
+      session: {
+        prompt: vi.fn(async () => {}),
+        getLastAssistantText: vi.fn(() => "ok"),
+        getSessionStats: vi.fn(() => ({
+          sessionFile: undefined,
+          sessionId: "test",
+          userMessages: 1,
+          assistantMessages: 1,
+          toolCalls: 0,
+          toolResults: 0,
+          totalMessages: 2,
+          tokens: { input: 10, output: 20, cacheRead: 0, cacheWrite: 0, total: 30 },
+          cost: 0.001,
+        })),
+        subscribe: vi.fn(() => () => {}),
+        dispose: disposeSpy,
+      } as any,
+      extensionsResult: { extensions: [], errors: [], warnings: [] } as any,
+    });
+
+    const backend = new PiBackend({
+      model: "test-model",
+      provider: "test-provider",
+      cwd: "/tmp/test",
+      modelRegistry: mockModelRegistry(),
+      _sessionFactory: factory,
+    });
+
+    await backend.run(makeNode(), "Code", new Context());
+
+    // Should dispose exactly once in the finally block (no abort handler called)
+    expect(disposeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("listener cleanup is verified — abort handler removed after normal completion", async () => {
+    const { backend } = createTestBackend("ok");
+    const controller = new AbortController();
+
+    const addSpy = vi.spyOn(controller.signal, "addEventListener");
+    const removeSpy = vi.spyOn(controller.signal, "removeEventListener");
+
+    await backend.run(makeNode(), "Code", new Context(), { signal: controller.signal });
+
+    // Should have added and then removed the abort listener
+    expect(addSpy).toHaveBeenCalledWith("abort", expect.any(Function), { once: true });
+    expect(removeSpy).toHaveBeenCalledWith("abort", expect.any(Function));
+
+    addSpy.mockRestore();
+    removeSpy.mockRestore();
+  });
+});

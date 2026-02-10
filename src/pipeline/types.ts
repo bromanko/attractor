@@ -73,7 +73,7 @@ export type Graph = {
 // ---------------------------------------------------------------------------
 
 /** Stage execution outcome status. */
-export type StageStatus = "success" | "fail" | "partial_success" | "retry" | "skipped";
+export type StageStatus = "success" | "fail" | "partial_success" | "retry" | "skipped" | "cancelled";
 
 /** The result of executing a node handler. */
 export type Outcome = {
@@ -194,6 +194,7 @@ export type PipelineEventKind =
   | "pipeline_resumed"
   | "pipeline_completed"
   | "pipeline_failed"
+  | "pipeline_cancelled"
   | "stage_started"
   | "stage_completed"
   | "stage_failed"
@@ -262,6 +263,11 @@ export interface Interviewer {
 // CodergenBackend (Section 4.5)
 // ---------------------------------------------------------------------------
 
+/** Options passed to backend run calls. */
+export type BackendRunOptions = {
+  signal?: AbortSignal;
+};
+
 export interface CodergenBackend {
-  run(node: GraphNode, prompt: string, context: Context): Promise<string | Outcome>;
+  run(node: GraphNode, prompt: string, context: Context, options?: BackendRunOptions): Promise<string | Outcome>;
 }

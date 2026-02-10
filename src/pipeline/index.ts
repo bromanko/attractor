@@ -10,7 +10,7 @@ export type {
   PipelineEvent, PipelineEventKind,
   Diagnostic, Severity,
   Question, QuestionType, Option, Answer, AnswerValue, Interviewer,
-  CodergenBackend,
+  CodergenBackend, BackendRunOptions,
 } from "./types.js";
 
 export { Context, SHAPE_TO_TYPE, KNOWN_HANDLER_TYPES } from "./types.js";

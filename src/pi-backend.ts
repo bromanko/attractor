@@ -26,7 +26,7 @@ import {
 import type { Model, Api } from "@mariozechner/pi-ai";
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 
-import type { CodergenBackend, GraphNode, Outcome } from "./pipeline/types.js";
+import type { CodergenBackend, GraphNode, Outcome, BackendRunOptions } from "./pipeline/types.js";
 import { Context } from "./pipeline/types.js";
 
 // ---------------------------------------------------------------------------
@@ -247,7 +247,17 @@ export class PiBackend implements CodergenBackend {
     node: GraphNode,
     prompt: string,
     context: Context,
+    options?: BackendRunOptions,
   ): Promise<Outcome> {
+    // Short-circuit if already aborted
+    const signal = options?.signal;
+    if (signal?.aborted) {
+      return {
+        status: "cancelled",
+        failure_reason: "Cancelled before execution started",
+      };
+    }
+
     // -- 2.1 Model resolution -------------------------------------------
     const provider =
       (node.attrs.llm_provider as string) ?? this._config.provider;
@@ -366,7 +376,34 @@ export class PiBackend implements CodergenBackend {
       }
 
       // -- Send prompt and wait for completion --------------------------
-      await session.prompt(fullPrompt);
+      // Set up abort listener for in-flight cancellation
+      let abortHandler: (() => void) | undefined;
+      if (signal) {
+        abortHandler = () => {
+          try {
+            session?.dispose();
+          } catch {
+            // Best effort — dispose may already have been called
+          }
+        };
+        signal.addEventListener("abort", abortHandler, { once: true });
+      }
+
+      try {
+        await session.prompt(fullPrompt);
+      } finally {
+        if (abortHandler) {
+          signal!.removeEventListener("abort", abortHandler);
+        }
+      }
+
+      // Check if aborted during prompt
+      if (signal?.aborted) {
+        return {
+          status: "cancelled",
+          failure_reason: "Cancelled during execution",
+        };
+      }
 
       // -- 2.8 Usage extraction -----------------------------------------
       const stats = session.getSessionStats();
@@ -398,12 +435,20 @@ export class PiBackend implements CodergenBackend {
       return outcome;
     } catch (err) {
       // -- 2.9 Error handling -------------------------------------------
+      // Detect cancellation
+      if (signal?.aborted) {
+        return {
+          status: "cancelled",
+          failure_reason: "Cancelled during execution",
+        };
+      }
       return {
         status: "fail",
         failure_reason: `LLM error: ${err instanceof Error ? err.message : String(err)}`,
       };
     } finally {
-      session?.dispose();
+      // Idempotent dispose — may already have been called by abort handler
+      try { session?.dispose(); } catch { /* ignore */ }
     }
   }
 }
