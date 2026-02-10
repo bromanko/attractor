@@ -9,6 +9,12 @@ function job_lint() {
 }
 
 function job_test() {
+  # Integration tests execute dist/cli.js, so build before running vitest.
+  selfci step start "tsc (for tests)"
+  if ! npm run build; then
+    selfci step fail
+  fi
+
   selfci step start "vitest"
   if ! npm test; then
     selfci step fail
@@ -23,6 +29,28 @@ function job_build() {
 function job_nix_build() {
   selfci step start "nix build"
   nix build
+}
+
+function ensure_deps() {
+  # Avoid concurrent `npm ci` races when jobs share a working copy.
+  if [ -d node_modules ]; then
+    return
+  fi
+
+  local lock_dir=".selfci-npm-ci.lock"
+  while ! mkdir "$lock_dir" 2>/dev/null; do
+    if [ -d node_modules ]; then
+      return
+    fi
+    sleep 0.2
+  done
+
+  (
+    trap 'rmdir "$lock_dir" 2>/dev/null || true' EXIT
+    if [ ! -d node_modules ]; then
+      npm ci --ignore-scripts
+    fi
+  )
 }
 
 case "$SELFCI_JOB_NAME" in
@@ -42,15 +70,15 @@ case "$SELFCI_JOB_NAME" in
     ;;
 
   lint)
-    nix develop -c bash -c "npm ci --ignore-scripts && $(declare -f job_lint); job_lint"
+    nix develop -c bash -c "set -euo pipefail; $(declare -f ensure_deps); $(declare -f job_lint); ensure_deps; job_lint"
     ;;
 
   test)
-    nix develop -c bash -c "npm ci --ignore-scripts && $(declare -f job_test); job_test"
+    nix develop -c bash -c "set -euo pipefail; $(declare -f ensure_deps); $(declare -f job_test); ensure_deps; job_test"
     ;;
 
   build)
-    nix develop -c bash -c "npm ci --ignore-scripts && $(declare -f job_build); job_build"
+    nix develop -c bash -c "set -euo pipefail; $(declare -f ensure_deps); $(declare -f job_build); ensure_deps; job_build"
     ;;
 
   nix-build)
