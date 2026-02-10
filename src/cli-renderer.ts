@@ -213,7 +213,7 @@ export class Spinner {
  * Format a pipeline completion summary.
  */
 export function renderSummary(opts: {
-  status: "success" | "fail";
+  status: "success" | "fail" | "cancelled";
   completedNodes: string[];
   logsRoot: string;
   elapsedMs: number;
@@ -221,6 +221,8 @@ export function renderSummary(opts: {
   const elapsed = formatDuration(opts.elapsedMs);
   const statusIcon = opts.status === "success"
     ? `${ANSI.green}✔ success${ANSI.reset}`
+    : opts.status === "cancelled"
+    ? `${ANSI.yellow}⊘ cancelled${ANSI.reset}`
     : `${ANSI.red}✘ fail${ANSI.reset}`;
 
   const path = opts.completedNodes.join(` ${ANSI.dim}→${ANSI.reset} `);

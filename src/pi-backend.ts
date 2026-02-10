@@ -387,6 +387,15 @@ export class PiBackend implements CodergenBackend {
           }
         };
         signal.addEventListener("abort", abortHandler, { once: true });
+
+        // Re-check after registering listener to close the race window
+        if (signal.aborted) {
+          abortHandler();
+          return {
+            status: "cancelled",
+            failure_reason: "Cancelled before prompt dispatch",
+          };
+        }
       }
 
       try {

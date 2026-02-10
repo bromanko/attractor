@@ -443,9 +443,10 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
       if (outcome.status === "retry" && attempt < maxAttempts) {
         const count = (nodeRetries.get(node.id) ?? 0) + 1;
         nodeRetries.set(node.id, count);
-        emit(config, "stage_retrying", { name: node.id, attempt, delay: retryDelay(attempt) });
+        const delay1 = retryDelay(attempt);
+        emit(config, "stage_retrying", { name: node.id, attempt, delay: delay1 });
         try {
-          await sleep(retryDelay(attempt), abortSignal);
+          await sleep(delay1, abortSignal);
         } catch {
           // Abort during backoff — exit immediately
           const cr = await checkCancelled(node.id);
@@ -458,9 +459,10 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
         if (attempt < maxAttempts) {
           const count = (nodeRetries.get(node.id) ?? 0) + 1;
           nodeRetries.set(node.id, count);
-          emit(config, "stage_retrying", { name: node.id, attempt, delay: retryDelay(attempt) });
+          const delay2 = retryDelay(attempt);
+          emit(config, "stage_retrying", { name: node.id, attempt, delay: delay2 });
           try {
-            await sleep(retryDelay(attempt), abortSignal);
+            await sleep(delay2, abortSignal);
           } catch {
             // Abort during backoff — exit immediately
             const cr = await checkCancelled(node.id);
