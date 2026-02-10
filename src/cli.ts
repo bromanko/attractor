@@ -34,7 +34,7 @@ Usage:
 
 Run options:
   --goal <text>          Override the graph's goal attribute
-  --model <model>        LLM model to use (default: claude-sonnet-4-5)
+  --model <model>        LLM model to use (default: claude-opus-4-6)
   --provider <name>      Provider name (default: anthropic)
   --logs <dir>           Logs directory (default: .attractor/logs)
   --system <prompt>      System prompt for codergen stages
@@ -148,7 +148,7 @@ async function cmdRun(
 
   validateOrRaise(graph);
 
-  const modelName = (args.model as string) ?? "claude-sonnet-4-5";
+  const modelName = (args.model as string) ?? "claude-opus-4-6";
   const providerName = (args.provider as string) ?? "anthropic";
   const logsRoot = (args.logs as string) ?? ".attractor/logs";
   const verbose = args.verbose === true;
