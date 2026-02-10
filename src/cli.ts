@@ -12,12 +12,20 @@ import { readFile } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { existsSync } from "node:fs";
 import { parseDot, validate, validateOrRaise, runPipeline, PiBackend, AutoApproveInterviewer } from "./pipeline/index.js";
-import type { PipelineEvent, Diagnostic, CodergenBackend, ToolMode, Interviewer, Checkpoint } from "./pipeline/index.js";
+import type { PipelineEvent, Diagnostic, CodergenBackend, ToolMode, Interviewer, Checkpoint, Graph } from "./pipeline/index.js";
 import {
   AuthStorage,
   ModelRegistry,
 } from "@mariozechner/pi-coding-agent";
 import { InteractiveInterviewer } from "./interactive-interviewer.js";
+import {
+  renderBanner,
+  renderSummary,
+  renderResumeInfo,
+  renderMarkdown,
+  Spinner,
+  formatDuration,
+} from "./cli-renderer.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -85,20 +93,16 @@ function severityIcon(severity: Diagnostic["severity"]): string {
   }
 }
 
-function eventIcon(kind: string): string {
-  const icons: Record<string, string> = {
-    pipeline_started: "🚀",
-    stage_started: "▶️ ",
-    stage_completed: "✅",
-    stage_failed: "💥",
-    stage_retrying: "🔄",
-    checkpoint_saved: "💾",
-    pipeline_completed: "🏁",
-    pipeline_failed: "❌",
-    interview_started: "🙋",
-    interview_completed: "✍️ ",
-  };
-  return icons[kind] ?? "·";
+/**
+ * Resolve the per-stage model for a node, if it differs from the default.
+ * Returns undefined if the node uses the default model.
+ */
+function getStageModel(nodeId: string, graph: Graph, defaultModel: string): string | undefined {
+  const node = graph.nodes.find((n) => n.id === nodeId);
+  if (!node) return undefined;
+  const nodeModel = node.attrs.llm_model as string | undefined;
+  if (nodeModel && nodeModel !== defaultModel) return nodeModel;
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -203,13 +207,13 @@ async function cmdRun(
     process.exit(1);
   }
 
-  console.log(`┌─ Attractor Pipeline ─────────────────────────────┐`);
-  console.log(`│  ${(graph.attrs.goal ?? graph.name).slice(0, 48).padEnd(48)} │`);
-  console.log(`│  Model: ${modelName.padEnd(39)} │`);
-  console.log(`│  Tools: ${toolMode.padEnd(39)} │`);
-  console.log(`│  Nodes: ${String(graph.nodes.length).padEnd(39)} │`);
-  console.log(`└──────────────────────────────────────────────────┘`);
-  console.log();
+  // Display banner
+  console.log(renderBanner({
+    goal: graph.attrs.goal ?? graph.name,
+    defaultModel: modelName,
+    toolMode,
+    nodeCount: graph.nodes.length,
+  }));
 
   // Load checkpoint for --resume
   let checkpoint: Checkpoint | undefined;
@@ -224,9 +228,8 @@ async function cmdRun(
     } else {
       try {
         checkpoint = JSON.parse(await readFile(cpPath, "utf-8")) as Checkpoint;
-        console.log(`  ♻️  Resuming from: ${checkpoint.current_node}`);
-        console.log(`  ✓  Previously completed: ${checkpoint.completed_nodes.join(" → ")}`);
-        console.log();
+        const resumeAt = checkpoint.resume_at ?? checkpoint.current_node;
+        console.log(renderResumeInfo(checkpoint, resumeAt));
       } catch (err) {
         console.error(`Error reading checkpoint: ${err}`);
         process.exit(1);
@@ -235,6 +238,7 @@ async function cmdRun(
   }
 
   const startTime = Date.now();
+  const spinner = new Spinner();
 
   const result = await runPipeline({
     graph,
@@ -245,8 +249,21 @@ async function cmdRun(
     onEvent(event: PipelineEvent) {
       const d = event.data as Record<string, unknown>;
       if (verbose) {
+        const icons: Record<string, string> = {
+          pipeline_started: "🚀",
+          stage_started: "▶️ ",
+          stage_completed: "✅",
+          stage_failed: "💥",
+          stage_retrying: "🔄",
+          checkpoint_saved: "💾",
+          pipeline_completed: "🏁",
+          pipeline_failed: "❌",
+          interview_started: "🙋",
+          interview_completed: "✍️ ",
+        };
+        const icon = icons[event.kind] ?? "·";
         console.log(
-          `  ${eventIcon(event.kind)} ${event.kind.padEnd(20)} ${JSON.stringify(d)}`,
+          `  ${icon} ${event.kind.padEnd(20)} ${JSON.stringify(d)}`,
         );
       } else {
         switch (event.kind) {
@@ -256,19 +273,28 @@ async function cmdRun(
           case "pipeline_resumed":
             console.log(`  ♻️  Resuming at: ${d.from}\n`);
             break;
-          case "stage_started":
-            process.stdout.write(
-              `  ▶️  ${String(d.name).padEnd(20)}`,
-            );
+          case "stage_started": {
+            const stageModel = getStageModel(String(d.name), graph, modelName);
+            spinner.start(String(d.name), stageModel);
             break;
+          }
           case "stage_completed":
-            process.stdout.write("✅\n");
+            spinner.stop("success");
             break;
-          case "stage_failed":
-            process.stdout.write(`💥 ${d.error}\n`);
+          case "stage_failed": {
+            const errorMsg = d.error ? String(d.error) : undefined;
+            // Render failure reason as markdown if it contains markdown formatting
+            const rendered = errorMsg && /[#*`\[\]\n]/.test(errorMsg)
+              ? renderMarkdown(errorMsg)
+              : errorMsg;
+            spinner.stop("fail", rendered);
+            break;
+          }
+          case "stage_retrying":
+            spinner.stop("retry");
             break;
           case "pipeline_completed":
-            console.log(`\n  🏁 Pipeline completed (${((Date.now() - startTime) / 1000).toFixed(1)}s)`);
+            console.log(`\n  🏁 Pipeline completed (${formatDuration(Date.now() - startTime)})`);
             break;
           case "pipeline_failed":
             console.log(`\n  ❌ Pipeline failed: ${d.error}`);
@@ -278,10 +304,12 @@ async function cmdRun(
     },
   });
 
-  console.log();
-  console.log(`  Status: ${result.status}`);
-  console.log(`  Path:   ${result.completedNodes.join(" → ")}`);
-  console.log(`  Logs:   ${resolve(logsRoot)}`);
+  console.log(renderSummary({
+    status: result.status,
+    completedNodes: result.completedNodes,
+    logsRoot: resolve(logsRoot),
+    elapsedMs: Date.now() - startTime,
+  }));
 
   if (result.status === "fail") process.exit(1);
 }

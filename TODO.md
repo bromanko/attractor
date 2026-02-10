@@ -33,17 +33,17 @@
 
 ## CLI Output & UX
 
-- [ ] **Remove model from startup banner** — The banner displays a single model, but individual stages can override with `llm_model`/`llm_provider`. Either remove the model line or label it "Default model" to avoid confusion.
-- [ ] **Progress indication for long-running stages** — After `stage_started`, there's no visual feedback until the stage completes. Add a spinner, elapsed timer, or periodic dot/tick output so the user can tell the process isn't frozen.
+- [x] **Remove model from startup banner** — The banner displays a single model, but individual stages can override with `llm_model`/`llm_provider`. Either remove the model line or label it "Default model" to avoid confusion.
+- [x] **Progress indication for long-running stages** — After `stage_started`, there's no visual feedback until the stage completes. Add a spinner, elapsed timer, or periodic dot/tick output so the user can tell the process isn't frozen.
 - [ ] **Running workflow visibility (tmux-based observability)** — Design a way to inspect live workflow execution in real time using `tmux`.
   - [ ] Define UX: `attractor run ... --tmux` or `attractor watch <run-id>` that opens/attaches to a session.
   - [ ] Decide pane layout (e.g. stage timeline, latest logs/events, checkpoint/context summary, selfci output).
   - [ ] Stream structured stage events to pane(s) without breaking non-interactive mode.
   - [ ] Handle reconnect/attach for long-running or detached workflows.
   - [ ] Add graceful fallback when `tmux` is unavailable (plain terminal output unchanged).
-- [ ] **Fix banner border alignment** — The box-drawing characters in the startup banner are misaligned (content width doesn't match border width). Use consistent column widths for `┌`, `│`, and `└` lines.
-- [ ] **Show per-stage model** — When a stage uses a non-default model, display it alongside the stage name in the output (e.g., `▶️  plan_review [gpt-5.3-codex]`).
-- [ ] **Render markdown in terminal output** — LLM responses displayed at human gates and in failure messages are raw markdown. Use `marked` + `marked-terminal` to render headings, lists, code blocks, and emphasis with ANSI formatting for readable terminal output.
+- [x] **Fix banner border alignment** — The box-drawing characters in the startup banner are misaligned (content width doesn't match border width). Use consistent column widths for `┌`, `│`, and `└` lines.
+- [x] **Show per-stage model** — When a stage uses a non-default model, display it alongside the stage name in the output (e.g., `▶️  plan_review [gpt-5.3-codex]`).
+- [x] **Render markdown in terminal output** — LLM responses displayed at human gates and in failure messages are raw markdown. Use `marked` + `marked-terminal` to render headings, lists, code blocks, and emphasis with ANSI formatting for readable terminal output.
 
 ## Trust & Signal Integrity
 

@@ -32,13 +32,15 @@
   },
   "license": "Apache-2.0",
   "dependencies": {
+    "@mariozechner/pi-ai": "0.52.6",
     "@mariozechner/pi-coding-agent": "0.52.6",
-    "@mariozechner/pi-ai": "0.52.6"
+    "marked": "^15.0.12",
+    "marked-terminal": "^7.3.0"
   },
   "devDependencies": {
+    "@types/node": "^22.0.0",
     "typescript": "^5.7.0",
-    "vitest": "^3.0.0",
-    "@types/node": "^22.0.0"
+    "vitest": "^3.0.0"
   },
   "engines": {
     "node": ">=20"
