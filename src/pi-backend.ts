@@ -106,16 +106,25 @@ export type PiBackendConfig = {
  *
  * Falls back to "success" if no markers found.
  */
+function getResponseKeyBase(node: GraphNode): string {
+  const raw = node.attrs.response_key_base;
+  if (typeof raw === "string" && raw.trim().length > 0) {
+    return raw.trim();
+  }
+  return node.id;
+}
+
 export function defaultParseOutcome(
   text: string,
   node: GraphNode,
   _context: Context,
 ): Outcome {
+  const keyBase = getResponseKeyBase(node);
   const outcome: Outcome = {
     status: "success",
     notes: text.slice(0, 500),
     context_updates: {
-      [`${node.id}.response`]: text.slice(0, 2000),
+      [`${keyBase}.response`]: text.slice(0, 2000),
     },
   };
 
@@ -433,12 +442,13 @@ export class PiBackend implements CodergenBackend {
       const outcome = parseOutcome(responseText, node, context);
 
       // Merge usage + full response into context_updates.
-      // The parser truncates ${node.id}.response to 2000 chars for context
+      // The parser truncates ${keyBase}.response to 2000 chars for context
       // threading; _full_response preserves the complete text for log files.
+      const keyBase = getResponseKeyBase(node);
       outcome.context_updates = {
         ...outcome.context_updates,
         ...usageUpdates,
-        [`${node.id}._full_response`]: responseText,
+        [`${keyBase}._full_response`]: responseText,
       };
 
       return outcome;

@@ -63,16 +63,25 @@ export type LlmBackendConfig = {
  *
  * Falls back to "success" if no markers found.
  */
+function getResponseKeyBase(node: GraphNode): string {
+  const raw = node.attrs.response_key_base;
+  if (typeof raw === "string" && raw.trim().length > 0) {
+    return raw.trim();
+  }
+  return node.id;
+}
+
 function defaultParseOutcome(
   text: string,
   node: GraphNode,
   _context: Context,
 ): Outcome {
+  const keyBase = getResponseKeyBase(node);
   const outcome: Outcome = {
     status: "success",
     notes: text.slice(0, 500),
     context_updates: {
-      [`${node.id}.response`]: text.slice(0, 2000),
+      [`${keyBase}.response`]: text.slice(0, 2000),
     },
   };
 

@@ -70,6 +70,7 @@ You have final authority — accept the plan as-is, or send it back for revision
         label="Revise plan",
         llm_model="gpt-5.3-codex",
         llm_provider="openai-codex",
+        response_key_base="plan",
         prompt="The plan needs revision based on feedback.\n\n\
 Check the pipeline context for human.gate.feedback and \
 plan_review.response to understand what needs to change.\n\n\
