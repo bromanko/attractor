@@ -2,30 +2,6 @@
 
 ## Pipeline Engine
 
-- [ ] **Parallel execution (v1 correctness hardening)** — Parallel fork/join landed, but review found merge-blocking correctness gaps that must be fixed before considering this done.
-  - [ ] **Fix branch fail-path semantics in `executeBranch()` (`src/pipeline/engine.ts`)**
-    - Current bug: branch returns terminal failure immediately when a node outcome is `fail`, skipping normal edge selection.
-    - Required behavior: preserve main-loop semantics inside branches — apply context updates, evaluate/select next edge, and continue if a valid failure route exists.
-    - Only terminally fail a branch when there is no valid next edge/retry path (or explicit policy forbids continuation).
-    - Add tests:
-      - branch node returns `fail` but has failure-handling edge that reaches join (should succeed overall)
-      - branch node returns `fail` with no routable edge (should fail)
-  - [ ] **Disallow nested parallel regions in v1 (`src/pipeline/validator.ts`)**
-    - Current bug: comments say nested parallel unsupported, but validator does not enforce this.
-    - Add explicit validation error when a branch subtree contains another `parallel` fork before reaching the resolved join.
-    - Error should include outer fork id + nested fork id for debuggability.
-  - [ ] **Add defensive runtime guard for nested forks in branch runner (`src/pipeline/engine.ts`)**
-    - If validation is bypassed and `executeBranch()` encounters `parallel`, fail loudly instead of executing it as a normal stage.
-    - Emit clear error event/message indicating nested parallel is unsupported in v1.
-  - [ ] **Fix `completed_nodes` accuracy after parallel blocks (`src/pipeline/engine.ts`)**
-    - Current bug: post-parallel reconstruction replays paths using final branch outcome, which can mis-mark nodes.
-    - Track canonical per-branch executed node IDs during real execution and return them in `BranchResult`.
-    - Merge these exact node IDs into checkpoint/state instead of synthetic replay.
-    - Add tests where branch routing depends on intermediate outcomes to verify completed node list is exact.
-  - [ ] **Regression/contract tests for parallel correctness**
-    - Ensure non-parallel pipelines are unchanged.
-    - Ensure deterministic ordering/log metadata still holds after fixes.
-    - Ensure selfci test/lint/build stays green with these fixes.
 - [ ] **Graph composition** — Support including/embedding graphs from other `.dot` files. Enable reusable sub-pipelines (e.g. a shared review pipeline included by multiple feature workflows). Syntax TBD — could be `subgraph` with a `file` attribute or a custom `include` directive.
 - [ ] **Workflow search path** — Resolve workflow names from well-known directories so `attractor run my-pipeline` finds `.attractor/workflows/my-pipeline.dot` (repo-local) or `~/.config/attractor/workflows/my-pipeline.dot` (user-global).
 - [ ] **Checkpoint resume routing correctness** — On resume, continue from the exact previously selected next node/edge, not just the first outgoing edge from `checkpoint.current_node`. Persist selected edge/next node in `checkpoint.json` and use it during recovery.
