@@ -24,11 +24,12 @@ Run build/test/selfci commands from within that environment.
 
 ## Working rules
 
+> **Pre-release policy:** This project is pre-release. Backward compatibility is **not required** unless a task explicitly asks for it.
+
 1. Keep changes focused and minimal.
-2. Preserve existing public APIs unless the task explicitly requires breaking changes.
-3. Prefer small, composable functions and explicit types.
-4. Follow current naming and module organization patterns in nearby files.
-5. Do not edit generated output in `dist/` directly.
+2. Prefer small, composable functions and explicit types.
+3. Follow current naming and module organization patterns in nearby files.
+4. Do not edit generated output in `dist/` directly.
 
 ## Dev commands
 
@@ -63,7 +64,7 @@ If the change is isolated and full tests are expensive, run the most relevant te
 For changes touching parsing/execution/model behavior (especially under `src/pipeline/`):
 
 - Maintain deterministic behavior (edge selection, routing, condition evaluation).
-- Preserve backward compatibility of DOT parsing unless explicitly requested.
+- Backward compatibility of DOT parsing is optional in this pre-release phase; prefer clarity and correctness.
 - Add focused regression tests for bug fixes and edge cases.
 
 ## Commit guidance
