@@ -16,6 +16,7 @@ import {
   parseWorkspaceNames,
   sanitizeWorkspaceNamePart,
   uniquifyWorkspaceName,
+  buildMergedHeadsRevset,
   type JjRunner,
 } from "./workspace.js";
 import { Context } from "./types.js";
@@ -247,6 +248,34 @@ describe("uniquifyWorkspaceName", () => {
     }
     // All results should be unique
     expect(new Set(results).size).toBe(5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildMergedHeadsRevset
+// ---------------------------------------------------------------------------
+
+describe("buildMergedHeadsRevset", () => {
+  it("builds revset with validated short id", () => {
+    const { head, revset } = buildMergedHeadsRevset("abc123");
+    expect(head).toBe("abc123");
+    expect(revset).toBe("heads(descendants(abc123) & mutable() & ~abc123)");
+  });
+
+  it("trims surrounding whitespace", () => {
+    const { head, revset } = buildMergedHeadsRevset("  abc123  \n");
+    expect(head).toBe("abc123");
+    expect(revset).toBe("heads(descendants(abc123) & mutable() & ~abc123)");
+  });
+
+  it("allows @ fallback token", () => {
+    const { head, revset } = buildMergedHeadsRevset("@");
+    expect(head).toBe("@");
+    expect(revset).toBe("heads(descendants(@) & mutable() & ~@)");
+  });
+
+  it("rejects unexpected revset characters", () => {
+    expect(() => buildMergedHeadsRevset("abc123) | all()")).toThrow(/Invalid change id format/);
   });
 });
 
@@ -594,10 +623,48 @@ describe("WorkspaceMergeHandler", () => {
   }
 
   it("rebases workspace commits onto default", async () => {
-    const jj = mockJj({
-      "log": "commit3\ncommit2\ncommit1",
-      "rebase": "",
-    });
+    const calls: string[][] = [];
+    const jj: JjRunner & { calls: string[][] } = Object.assign(
+      async (args: string[]) => {
+        calls.push(args);
+
+        if (
+          args[0] === "log" &&
+          args[1] === "-r" &&
+          args[2] === "ancestors(my-feature@) & mutable() & ~ancestors(default@)"
+        ) {
+          return "commit3\ncommit2\ncommit1";
+        }
+
+        if (
+          args[0] === "log" &&
+          args[1] === "-r" &&
+          args[2] === "@" &&
+          args.includes("--limit")
+        ) {
+          return "default1234";
+        }
+
+        if (args[0] === "rebase" && args[1] === "-s" && args[2] === "commit1" && args[3] === "-d" && args[4] === "@") {
+          return "";
+        }
+
+        if (
+          args[0] === "log" &&
+          args[1] === "-r" &&
+          args[2] === "heads(descendants(default1234) & mutable() & ~default1234)"
+        ) {
+          return "merged9999\n";
+        }
+
+        if (args[0] === "rebase" && args[1] === "-s" && args[2] === "@" && args[3] === "-d" && args[4] === "merged9999") {
+          return "";
+        }
+
+        return "";
+      },
+      { calls },
+    );
 
     const logsRoot = await mkdtemp(join(tmpdir(), "ws-test-"));
     try {
@@ -608,14 +675,220 @@ describe("WorkspaceMergeHandler", () => {
       const outcome = await handler.execute(node, context, makeGraph(), logsRoot);
 
       expect(outcome.status).toBe("success");
-      expect(outcome.notes).toContain("3 commit(s)");
+      expect(outcome.notes).toBe(
+        'Merged 3 commit(s) from workspace "my-feature" and moved @ onto merged tip merged9999.',
+      );
       expect(outcome.context_updates).toBeDefined();
       expect(outcome.context_updates![WS_CONTEXT.MERGED]).toBe("true");
 
       // Should have called rebase with the earliest (last) commit
-      const rebaseCall = jj.calls.find((c) => c[0] === "rebase");
+      const rebaseCall = jj.calls.find((c) => c[0] === "rebase" && c[2] === "commit1");
       expect(rebaseCall).toBeDefined();
-      expect(rebaseCall).toContain("commit1");
+    } finally {
+      await rm(logsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to @ when default head lookup fails and still merges", async () => {
+    const calls: string[][] = [];
+    const jj: JjRunner & { calls: string[][] } = Object.assign(
+      async (args: string[]) => {
+        calls.push(args);
+
+        if (
+          args[0] === "log" &&
+          args[1] === "-r" &&
+          args[2] === "ancestors(my-feature@) & mutable() & ~ancestors(default@)"
+        ) {
+          return "commit3\ncommit2\ncommit1";
+        }
+
+        if (
+          args[0] === "log" &&
+          args[1] === "-r" &&
+          args[2] === "@" &&
+          args.includes("--limit")
+        ) {
+          throw new Error("default head lookup failed");
+        }
+
+        if (args[0] === "rebase" && args[1] === "-s" && args[2] === "commit1" && args[3] === "-d" && args[4] === "@") {
+          return "";
+        }
+
+        if (
+          args[0] === "log" &&
+          args[1] === "-r" &&
+          args[2] === "heads(descendants(@) & mutable() & ~@)"
+        ) {
+          return "merged1234\n";
+        }
+
+        if (args[0] === "rebase" && args[1] === "-s" && args[2] === "@" && args[3] === "-d" && args[4] === "merged1234") {
+          return "";
+        }
+
+        return "";
+      },
+      { calls },
+    );
+
+    const logsRoot = await mkdtemp(join(tmpdir(), "ws-test-"));
+    try {
+      const handler = new WorkspaceMergeHandler(jj);
+      const context = contextWithWorkspace();
+      const node = makeNode({ id: "merge-fallback" });
+
+      const outcome = await handler.execute(node, context, makeGraph(), logsRoot);
+
+      expect(outcome.status).toBe("success");
+      expect(outcome.notes).toContain("moved @ onto merged tip merged1234");
+      expect(outcome.context_updates).toBeDefined();
+      expect(outcome.context_updates![WS_CONTEXT.MERGED]).toBe("true");
+      expect(context.logs.some((entry) => entry.includes("failed to capture default head before merge"))).toBe(true);
+
+      const mergeLog = JSON.parse(await readFile(join(logsRoot, "merge-fallback", "merge.json"), "utf-8"));
+      expect(mergeLog).toHaveProperty("merged_tip");
+      expect(mergeLog).toHaveProperty("default_head_before_merge");
+      expect(mergeLog).toHaveProperty("moved_default_head");
+      expect(mergeLog.default_head_before_merge).toBe("@");
+      expect(mergeLog.merged_tip).toBe("merged1234");
+      expect(mergeLog.moved_default_head).toBe(true);
+
+      // Ensure fallback path was exercised and did not abort merge.
+      const headLookupCall = jj.calls.find(
+        (c) => c[0] === "log" && c[1] === "-r" && c[2] === "@" && c.includes("--limit"),
+      );
+      const moveDefaultCall = jj.calls.find(
+        (c) => c[0] === "rebase" && c[1] === "-s" && c[2] === "@" && c[3] === "-d" && c[4] === "merged1234",
+      );
+      expect(headLookupCall).toBeDefined();
+      expect(moveDefaultCall).toBeDefined();
+    } finally {
+      await rm(logsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("succeeds without moving @ when merged heads query is empty", async () => {
+    const calls: string[][] = [];
+    const jj: JjRunner & { calls: string[][] } = Object.assign(
+      async (args: string[]) => {
+        calls.push(args);
+
+        if (
+          args[0] === "log" &&
+          args[1] === "-r" &&
+          args[2] === "ancestors(my-feature@) & mutable() & ~ancestors(default@)"
+        ) {
+          return "commit2\ncommit1";
+        }
+
+        if (args[0] === "log" && args[1] === "-r" && args[2] === "@" && args.includes("--limit")) {
+          return "default1234";
+        }
+
+        if (args[0] === "rebase" && args[1] === "-s" && args[2] === "commit1" && args[3] === "-d" && args[4] === "@") {
+          return "";
+        }
+
+        if (
+          args[0] === "log" &&
+          args[1] === "-r" &&
+          args[2] === "heads(descendants(default1234) & mutable() & ~default1234)"
+        ) {
+          return "\n";
+        }
+
+        return "";
+      },
+      { calls },
+    );
+
+    const logsRoot = await mkdtemp(join(tmpdir(), "ws-test-"));
+    try {
+      const handler = new WorkspaceMergeHandler(jj);
+      const context = contextWithWorkspace();
+      const node = makeNode({ id: "merge-empty-heads" });
+
+      const outcome = await handler.execute(node, context, makeGraph(), logsRoot);
+
+      expect(outcome.status).toBe("success");
+      expect(outcome.notes).toBe('Merged 2 commit(s) from workspace "my-feature".');
+      expect(outcome.notes).not.toContain("moved @ onto merged tip");
+      expect(outcome.context_updates).toBeDefined();
+      expect(outcome.context_updates![WS_CONTEXT.MERGED]).toBe("true");
+
+      const moveDefaultCall = jj.calls.find(
+        (c) => c[0] === "rebase" && c[1] === "-s" && c[2] === "@",
+      );
+      expect(moveDefaultCall).toBeUndefined();
+
+      const mergeLog = JSON.parse(await readFile(join(logsRoot, "merge-empty-heads", "merge.json"), "utf-8"));
+      expect(mergeLog).toHaveProperty("merged_tip");
+      expect(mergeLog).toHaveProperty("default_head_before_merge");
+      expect(mergeLog).toHaveProperty("moved_default_head");
+      expect(mergeLog.default_head_before_merge).toBe("default1234");
+      expect(mergeLog.merged_tip).toBeNull();
+      expect(mergeLog.moved_default_head).toBe(false);
+    } finally {
+      await rm(logsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("uses the first merged head deterministically when multiple are returned", async () => {
+    const calls: string[][] = [];
+    const jj: JjRunner & { calls: string[][] } = Object.assign(
+      async (args: string[]) => {
+        calls.push(args);
+
+        if (
+          args[0] === "log" &&
+          args[1] === "-r" &&
+          args[2] === "ancestors(my-feature@) & mutable() & ~ancestors(default@)"
+        ) {
+          return "commit2\ncommit1";
+        }
+
+        if (args[0] === "log" && args[1] === "-r" && args[2] === "@" && args.includes("--limit")) {
+          return "default1234";
+        }
+
+        if (args[0] === "rebase" && args[1] === "-s" && args[2] === "commit1" && args[3] === "-d" && args[4] === "@") {
+          return "";
+        }
+
+        if (
+          args[0] === "log" &&
+          args[1] === "-r" &&
+          args[2] === "heads(descendants(default1234) & mutable() & ~default1234)"
+        ) {
+          return "mergedA\nmergedB\n";
+        }
+
+        if (args[0] === "rebase" && args[1] === "-s" && args[2] === "@" && args[3] === "-d") {
+          return "";
+        }
+
+        return "";
+      },
+      { calls },
+    );
+
+    const logsRoot = await mkdtemp(join(tmpdir(), "ws-test-"));
+    try {
+      const handler = new WorkspaceMergeHandler(jj);
+      const context = contextWithWorkspace();
+
+      const outcome = await handler.execute(makeNode({ id: "merge-multiple-heads" }), context, makeGraph(), logsRoot);
+
+      expect(outcome.status).toBe("success");
+      expect(outcome.notes).toContain("merged tip mergedA");
+
+      const moveDefaultCall = jj.calls.find(
+        (c) => c[0] === "rebase" && c[1] === "-s" && c[2] === "@" && c[3] === "-d",
+      );
+      expect(moveDefaultCall).toBeDefined();
+      expect(moveDefaultCall![4]).toBe("mergedA");
     } finally {
       await rm(logsRoot, { recursive: true, force: true });
     }
@@ -651,6 +924,117 @@ describe("WorkspaceMergeHandler", () => {
 
       expect(outcome.status).toBe("fail");
       expect(outcome.failure_reason).toContain("No workspace context");
+    } finally {
+      await rm(logsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("fails when moving @ onto merged tip reports conflicts", async () => {
+    const calls: string[][] = [];
+    const jj: JjRunner & { calls: string[][] } = Object.assign(
+      async (args: string[]) => {
+        calls.push(args);
+
+        if (
+          args[0] === "log" &&
+          args[1] === "-r" &&
+          args[2] === "ancestors(my-feature@) & mutable() & ~ancestors(default@)"
+        ) {
+          return "commit2\ncommit1";
+        }
+
+        if (
+          args[0] === "log" &&
+          args[1] === "-r" &&
+          args[2] === "@" &&
+          args.includes("--limit")
+        ) {
+          return "default1234";
+        }
+
+        if (args[0] === "rebase" && args[1] === "-s" && args[2] === "commit1" && args[3] === "-d" && args[4] === "@") {
+          return "rebased";
+        }
+
+        if (
+          args[0] === "log" &&
+          args[1] === "-r" &&
+          args[2] === "heads(descendants(default1234) & mutable() & ~default1234)"
+        ) {
+          return "merged5678\n";
+        }
+
+        if (args[0] === "rebase" && args[1] === "-s" && args[2] === "@" && args[3] === "-d" && args[4] === "merged5678") {
+          throw new Error("working copy has conflicts");
+        }
+
+        return "";
+      },
+      { calls },
+    );
+
+    const logsRoot = await mkdtemp(join(tmpdir(), "ws-test-"));
+    try {
+      const handler = new WorkspaceMergeHandler(jj);
+      const context = contextWithWorkspace();
+
+      const outcome = await handler.execute(makeNode({ id: "merge-move-conflict" }), context, makeGraph(), logsRoot);
+
+      expect(outcome.status).toBe("fail");
+      expect(outcome.failure_reason).toBe(
+        "Merge conflicts detected while moving default workspace head. Resolve conflicts and retry.",
+      );
+      expect(outcome.context_updates).toBeDefined();
+      expect(outcome.context_updates![WS_CONTEXT.MERGE_CONFLICTS]).toBe("true");
+      expect(context.logs.some((entry) => entry.includes("failed to move default workspace head onto merged tip"))).toBe(true);
+    } finally {
+      await rm(logsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("fails when default head format is unexpected for revset construction", async () => {
+    const calls: string[][] = [];
+    const jj: JjRunner & { calls: string[][] } = Object.assign(
+      async (args: string[]) => {
+        calls.push(args);
+
+        if (
+          args[0] === "log" &&
+          args[1] === "-r" &&
+          args[2] === "ancestors(my-feature@) & mutable() & ~ancestors(default@)"
+        ) {
+          return "commit1";
+        }
+
+        if (
+          args[0] === "log" &&
+          args[1] === "-r" &&
+          args[2] === "@" &&
+          args.includes("--limit")
+        ) {
+          return "bad!head";
+        }
+
+        if (args[0] === "rebase" && args[1] === "-s" && args[2] === "commit1" && args[3] === "-d" && args[4] === "@") {
+          return "";
+        }
+
+        return "";
+      },
+      { calls },
+    );
+
+    const logsRoot = await mkdtemp(join(tmpdir(), "ws-test-"));
+    try {
+      const handler = new WorkspaceMergeHandler(jj);
+      const context = contextWithWorkspace();
+
+      const outcome = await handler.execute(makeNode({ id: "merge-invalid-head" }), context, makeGraph(), logsRoot);
+
+      expect(outcome.status).toBe("fail");
+      expect(outcome.failure_reason).toContain("Invalid change id format");
+      expect(outcome.context_updates).toBeDefined();
+      expect(outcome.context_updates![WS_CONTEXT.MERGE_CONFLICTS]).toBe("true");
     } finally {
       await rm(logsRoot, { recursive: true, force: true });
     }

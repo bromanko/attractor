@@ -146,6 +146,30 @@ function generateUniqueWorkspaceName(graphName: string, existingNames: Set<strin
   return uniquifyWorkspaceName(base, existingNames, true);
 }
 
+/**
+ * Normalize and validate a revision token before embedding into a revset.
+ * Accepts "@" or short alphanumeric change IDs.
+ */
+function normalizeRevisionToken(revision: string): string {
+  const normalized = revision.trim();
+  if (normalized === "@") return normalized;
+  if (!/^[a-z0-9]+$/i.test(normalized)) {
+    throw new Error(`Invalid change id format: ${JSON.stringify(revision)}`);
+  }
+  return normalized;
+}
+
+/**
+ * Build a revset for merged heads using a validated revision token.
+ */
+export function buildMergedHeadsRevset(defaultHeadBeforeMerge: string): { head: string; revset: string } {
+  const head = normalizeRevisionToken(defaultHeadBeforeMerge);
+  return {
+    head,
+    revset: `heads(descendants(${head}) & mutable() & ~${head})`,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // workspace.create
 // ---------------------------------------------------------------------------
@@ -302,17 +326,72 @@ export class WorkspaceMergeHandler implements Handler {
     // The oldest commit is last in the log output (log prints newest first)
     const earliest = commits[commits.length - 1];
 
-    // Rebase workspace commits onto the default workspace's current position
+    // Capture the current default workspace head before rewriting so we can
+    // locate the rebased workspace tip afterwards and put @ on that line.
+    let defaultHeadBeforeMerge = "@";
+    try {
+      defaultHeadBeforeMerge = (await jj(
+        ["log", "-r", "@", "--no-graph", "-T", "change_id.short()", "--limit", "1"],
+        repoRoot,
+      )).trim();
+    } catch (err: unknown) {
+      // Best effort fallback: use literal @ in revsets below.
+      context.appendLog(
+        `workspace.merge: failed to capture default head before merge; falling back to @ (${String(err)})`,
+      );
+      defaultHeadBeforeMerge = "@";
+    }
+
+    let safeDefaultHeadBeforeMerge = "@";
+
+    // Rebase workspace commits onto the default workspace's current position.
+    // Then move the default workspace's @ on top of the merged line so users
+    // immediately see merged changes in their active working copy.
+    let mergedTip: string | undefined;
     try {
       const output = await jj(["rebase", "-s", earliest, "-d", "@"], repoRoot);
 
       // Check for conflict markers in jj output
-      if (output.toLowerCase().includes("conflict")) {
+      if (/conflict/i.test(output)) {
         return {
           status: "fail",
           failure_reason: `Merge conflicts detected after rebase:\n${output}`,
           context_updates: { [WS_CONTEXT.MERGE_CONFLICTS]: "true" },
         };
+      }
+
+      // Find the tip(s) of commits that are descendants of the old default
+      // head; this should include the rebased workspace line.
+      const mergedHeadsQuery = buildMergedHeadsRevset(defaultHeadBeforeMerge);
+      safeDefaultHeadBeforeMerge = mergedHeadsQuery.head;
+      const mergedHeadsRaw = await jj(
+        [
+          "log",
+          "-r", mergedHeadsQuery.revset,
+          "--no-graph",
+          "-T", "change_id.short()",
+          "--limit", "1",
+        ],
+        repoRoot,
+      );
+      mergedTip = mergedHeadsRaw
+        .split("\n")
+        .find((s) => s.trim().length > 0)
+        ?.trim();
+
+      if (mergedTip) {
+        try {
+          await jj(["rebase", "-s", "@", "-d", mergedTip], repoRoot);
+        } catch (err) {
+          context.appendLog(
+            `workspace.merge: failed to move default workspace head onto merged tip (${mergedTip}): ${String(err)}`,
+          );
+          return {
+            status: "fail",
+            failure_reason: "Merge conflicts detected while moving default workspace head. Resolve conflicts and retry.",
+            context_updates: { [WS_CONTEXT.MERGE_CONFLICTS]: "true" },
+          };
+        }
       }
     } catch (err) {
       const errStr = String(err);
@@ -328,13 +407,26 @@ export class WorkspaceMergeHandler implements Handler {
     await mkdir(stageDir, { recursive: true });
     await writeFile(
       join(stageDir, "merge.json"),
-      JSON.stringify({ workspace: wsName, commits_merged: commits.length, commits }, null, 2),
+      JSON.stringify(
+        {
+          workspace: wsName,
+          commits_merged: commits.length,
+          commits,
+          merged_tip: mergedTip ?? null,
+          default_head_before_merge: safeDefaultHeadBeforeMerge,
+          moved_default_head: Boolean(mergedTip),
+        },
+        null,
+        2,
+      ),
       "utf-8",
     );
 
     return {
       status: "success",
-      notes: `Merged ${commits.length} commit(s) from workspace "${wsName}".`,
+      notes: mergedTip
+        ? `Merged ${commits.length} commit(s) from workspace "${wsName}" and moved @ onto merged tip ${mergedTip}.`
+        : `Merged ${commits.length} commit(s) from workspace "${wsName}".`,
       context_updates: { [WS_CONTEXT.MERGED]: "true" },
     };
   }
