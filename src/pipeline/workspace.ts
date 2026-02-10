@@ -17,6 +17,7 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { randomBytes } from "node:crypto";
 import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
 import { join, dirname, basename } from "node:path";
 import type { Handler, GraphNode, Context, Graph, Outcome } from "./types.js";
@@ -93,6 +94,58 @@ export const WS_CONTEXT = {
   MERGE_CONFLICTS: "workspace.merge_conflicts",
 } as const;
 
+/** Valid jj workspace name: alphanumeric, dashes, and underscores. */
+const VALID_WORKSPACE_NAME = /^[a-zA-Z0-9_-]+$/;
+
+export function parseWorkspaceNames(workspaceListOutput: string): Set<string> {
+  const names = new Set<string>();
+  for (const line of workspaceListOutput.split("\n")) {
+    const name = line.trim();
+    if (!name) continue;
+    if (VALID_WORKSPACE_NAME.test(name)) {
+      names.add(name);
+    }
+  }
+  return names;
+}
+
+/** Fallback used when an input sanitizes to an empty string (e.g., all special characters). */
+export const DEFAULT_WORKSPACE_PART = "pipeline";
+
+export function sanitizeWorkspaceNamePart(value: string): string {
+  const slug = value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+/, "")
+    .replace(/-{2,}/g, "-");
+
+  // Fall back to DEFAULT_WORKSPACE_PART when the entire input is
+  // non-alphanumeric and the slug ends up empty after sanitization.
+  return slug.slice(0, 48).replace(/-+$/, "") || DEFAULT_WORKSPACE_PART;
+}
+
+export function uniquifyWorkspaceName(base: string, existingNames: Set<string>, alwaysSuffix = false): string {
+  const runSuffix = randomBytes(4).toString("hex");
+
+  const MAX_ATTEMPTS = 1000;
+  let candidate = alwaysSuffix || existingNames.has(base) ? `${base}-${runSuffix}` : base;
+  let i = 2;
+  while (existingNames.has(candidate)) {
+    if (i > MAX_ATTEMPTS) {
+      throw new Error(`Could not generate unique workspace name after ${MAX_ATTEMPTS} attempts (base: "${base}")`);
+    }
+    candidate = `${base}-${runSuffix}-${i}`;
+    i += 1;
+  }
+
+  return candidate;
+}
+
+function generateUniqueWorkspaceName(graphName: string, existingNames: Set<string>): string {
+  const base = `pipeline-${sanitizeWorkspaceNamePart(graphName)}`;
+  return uniquifyWorkspaceName(base, existingNames, true);
+}
+
 // ---------------------------------------------------------------------------
 // workspace.create
 // ---------------------------------------------------------------------------
@@ -116,36 +169,55 @@ export class WorkspaceCreateHandler implements Handler {
     const repoRoot = await jj(["root"]);
     const repoName = basename(repoRoot);
 
-    // Resolve workspace name
-    const name =
-      (node.attrs.workspace_name as string) ??
-      `pipeline-${graph.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/-+$/, "")}`;
+    const existingList = await jj(["workspace", "list", "-T", "name ++ \"\\n\""]);
+    const existingNames = parseWorkspaceNames(existingList);
 
-    const wsPath = join(dirname(repoRoot), `${repoName}-ws-${name}`);
+    // Resolve workspace name and create, retrying on name collisions
+    // caused by concurrent workspace creation (TOCTOU race).
+    const MAX_CREATE_RETRIES = 3;
+    const rawName = node.attrs.workspace_name;
+    const configuredName = typeof rawName === "string"
+      ? sanitizeWorkspaceNamePart(rawName)
+      : undefined;
+    let currentNames = existingNames;
+    let name = "";
+    let wsPath = "";
 
-    // Check for collisions
-    const existingList = await jj(["workspace", "list"]);
-    if (existingList.includes(name) && name !== "default") {
-      return {
-        status: "fail",
-        failure_reason: `Workspace "${name}" already exists. Choose a different workspace_name.`,
-      };
+    for (let attempt = 0; attempt <= MAX_CREATE_RETRIES; attempt++) {
+      name =
+        configuredName && configuredName.length > 0
+          ? uniquifyWorkspaceName(configuredName, currentNames)
+          : generateUniqueWorkspaceName(graph.name, currentNames);
+
+      wsPath = join(dirname(repoRoot), `${repoName}-ws-${name}`);
+
+      try {
+        await jj(["workspace", "add", "--name", name, wsPath]);
+        break; // success
+      } catch (err) {
+        const errStr = String(err).toLowerCase();
+        const isCollision = errStr.includes("already exists") || errStr.includes("already a workspace");
+
+        if (isCollision && attempt < MAX_CREATE_RETRIES) {
+          // Re-read workspace list to get current state and retry
+          const refreshedList = await jj(["workspace", "list", "-T", "name ++ \"\\n\""]);
+          currentNames = parseWorkspaceNames(refreshedList);
+          continue;
+        }
+
+        return {
+          status: "fail",
+          failure_reason: isCollision
+            ? `Workspace name collision persisted after ${MAX_CREATE_RETRIES} retries: ${err}`
+            : `Failed to create workspace: ${err}`,
+        };
+      }
     }
 
     // Record current commit as the merge base
     const baseCommit = await jj(
       ["log", "-r", "@", "--no-graph", "-T", "change_id.short()", "--limit", "1"],
     );
-
-    // Create workspace
-    try {
-      await jj(["workspace", "add", "--name", name, wsPath]);
-    } catch (err) {
-      return {
-        status: "fail",
-        failure_reason: `Failed to create workspace: ${err}`,
-      };
-    }
 
     // Update registry
     await addToRegistry(repoRoot, name, wsPath);
