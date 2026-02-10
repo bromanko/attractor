@@ -148,13 +148,13 @@ function generateUniqueWorkspaceName(graphName: string, existingNames: Set<strin
 
 /**
  * Normalize and validate a revision token before embedding into a revset.
- * Accepts "@" or short alphanumeric change IDs.
+ * Accepts "@" or short alphanumeric commit/change IDs.
  */
 function normalizeRevisionToken(revision: string): string {
   const normalized = revision.trim();
   if (normalized === "@") return normalized;
   if (!/^[a-z0-9]+$/i.test(normalized)) {
-    throw new Error(`Invalid change id format: ${JSON.stringify(revision)}`);
+    throw new Error(`Invalid revision token format: ${JSON.stringify(revision)}`);
   }
   return normalized;
 }
@@ -297,7 +297,9 @@ export class WorkspaceMergeHandler implements Handler {
       };
     }
 
-    // Find workspace-specific commits (mutable, in workspace, not in default)
+    // Find workspace-specific commits (mutable, in workspace, not in default).
+    // Use commit IDs (not change IDs) to avoid ambiguity if a change has
+    // divergent revisions (e.g. qrxtstnswzns/0 and qrxtstnswzns/2).
     let commitsRaw: string;
     try {
       commitsRaw = await jj(
@@ -305,7 +307,7 @@ export class WorkspaceMergeHandler implements Handler {
           "log",
           "-r", `ancestors(${wsName}@) & mutable() & ~ancestors(default@)`,
           "--no-graph",
-          "-T", "change_id.short() ++ \"\\n\"",
+          "-T", "commit_id.short() ++ \"\\n\"",
         ],
         repoRoot,
       );
@@ -328,10 +330,11 @@ export class WorkspaceMergeHandler implements Handler {
 
     // Capture the current default workspace head before rewriting so we can
     // locate the rebased workspace tip afterwards and put @ on that line.
+    // Use commit ID to avoid ambiguity across divergent revisions.
     let defaultHeadBeforeMerge = "@";
     try {
       defaultHeadBeforeMerge = (await jj(
-        ["log", "-r", "@", "--no-graph", "-T", "change_id.short()", "--limit", "1"],
+        ["log", "-r", "@", "--no-graph", "-T", "commit_id.short()", "--limit", "1"],
         repoRoot,
       )).trim();
     } catch (err: unknown) {
@@ -369,7 +372,7 @@ export class WorkspaceMergeHandler implements Handler {
           "log",
           "-r", mergedHeadsQuery.revset,
           "--no-graph",
-          "-T", "change_id.short()",
+          "-T", "commit_id.short()",
           "--limit", "1",
         ],
         repoRoot,

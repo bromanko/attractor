@@ -275,7 +275,7 @@ describe("buildMergedHeadsRevset", () => {
   });
 
   it("rejects unexpected revset characters", () => {
-    expect(() => buildMergedHeadsRevset("abc123) | all()")).toThrow(/Invalid change id format/);
+    expect(() => buildMergedHeadsRevset("abc123) | all()")).toThrow(/Invalid revision token format/);
   });
 });
 
@@ -1032,7 +1032,7 @@ describe("WorkspaceMergeHandler", () => {
       const outcome = await handler.execute(makeNode({ id: "merge-invalid-head" }), context, makeGraph(), logsRoot);
 
       expect(outcome.status).toBe("fail");
-      expect(outcome.failure_reason).toContain("Invalid change id format");
+      expect(outcome.failure_reason).toContain("Invalid revision token format");
       expect(outcome.context_updates).toBeDefined();
       expect(outcome.context_updates![WS_CONTEXT.MERGE_CONFLICTS]).toBe("true");
     } finally {
