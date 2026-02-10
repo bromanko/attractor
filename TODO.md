@@ -20,6 +20,16 @@
 - [x] **Fix banner border alignment** — The box-drawing characters in the startup banner are misaligned (content width doesn't match border width). Use consistent column widths for `┌`, `│`, and `└` lines.
 - [x] **Show per-stage model** — When a stage uses a non-default model, display it alongside the stage name in the output (e.g., `▶️  plan_review [gpt-5.3-codex]`).
 - [x] **Render markdown in terminal output** — LLM responses displayed at human gates and in failure messages are raw markdown. Use `marked` + `marked-terminal` to render headings, lists, code blocks, and emphasis with ANSI formatting for readable terminal output.
+- [ ] **Structured failure output for tool stages (esp. `selfci`)** — Replace generic `Command failed` messages with concise, actionable diagnostics.
+  - [ ] Persist per-stage logs (`stdout.log`, `stderr.log`, `meta.json`) under run logs.
+  - [ ] Capture structured failure fields (command, cwd, exit code/signal, duration, stderr/stdout tail).
+  - [ ] Extract and print a one-line "failure digest" for common tools (`selfci`, `tsc`, `vitest`, `nix`) while still linking full logs.
+  - [ ] Improve final summary to include failed node, failure class, first failing check, and rerun command.
+  - [ ] Distinguish "noise" warnings (e.g. non-fatal SQLite busy) from primary failure causes.
+- [ ] **Structured review stage output (`review_code`)** — Review failures are currently dumped as raw markdown blocks in a single line.
+  - [ ] Render a compact header (`severity`, `category`, `file:line`, short finding title) with optional expanded details.
+  - [ ] Store parsed findings as structured JSON artifact per stage for later summarization/routing.
+  - [ ] Add clearer visual treatment for finding blocks (border/background color panel) to separate them from pipeline status lines.
 
 ## Trust & Signal Integrity
 
