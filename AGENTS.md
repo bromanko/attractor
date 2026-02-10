@@ -1,0 +1,75 @@
+# AGENTS.md
+
+Guidance for coding agents working in this repository.
+
+## Project at a glance
+
+- **Name:** `attractor`
+- **Language:** TypeScript (ESM, NodeNext)
+- **Runtime:** Node.js >= 20
+- **Build output:** `dist/`
+- **Main areas:**
+  - `src/llm/` — unified LLM client
+  - `src/agent/` — coding-agent loop
+  - `src/pipeline/` — DOT pipeline engine
+
+## Environment
+
+This repo is managed via **Nix flakes**.
+
+- Preferred: enter the dev shell with `nix develop`
+- Or use `direnv` (auto-loads `.envrc`) if configured locally
+
+Run build/test/selfci commands from within that environment.
+
+## Working rules
+
+1. Keep changes focused and minimal.
+2. Preserve existing public APIs unless the task explicitly requires breaking changes.
+3. Prefer small, composable functions and explicit types.
+4. Follow current naming and module organization patterns in nearby files.
+5. Do not edit generated output in `dist/` directly.
+
+## Dev commands
+
+- Install deps: `npm install`
+- Build: `npm run build`
+- Type-check: `npm run lint`
+- Test (all): `npm test`
+- Test (integration): `npm run test:integration`
+- Test (watch): `npm run test:watch`
+- SelfCI: `selfci`
+
+## Validation checklist (before finishing)
+
+Run, at minimum:
+
+1. `npm run lint`
+2. `npm test`
+3. `selfci`
+
+If the change is isolated and full tests are expensive, run the most relevant test subset and state what was run.
+
+## Code style expectations
+
+- TypeScript `strict` mode is enabled: avoid `any` and unsafe casts.
+- Keep modules ESM-compatible (`"type": "module"`, NodeNext).
+- Prefer discriminated unions and narrow types for state/result modeling.
+- Keep error handling explicit; return structured error data where appropriate.
+- Add or update tests in `test/` when behavior changes.
+
+## When editing architecture-critical areas
+
+For changes touching parsing/execution/model behavior (especially under `src/pipeline/`):
+
+- Maintain deterministic behavior (edge selection, routing, condition evaluation).
+- Preserve backward compatibility of DOT parsing unless explicitly requested.
+- Add focused regression tests for bug fixes and edge cases.
+
+## Commit guidance
+
+Use clear, scoped commit messages, e.g.:
+
+- `pipeline: fix conditional edge tie-break with weights`
+- `agent: add truncation guard for tool stderr`
+- `llm: improve retry handling for 429 responses`
