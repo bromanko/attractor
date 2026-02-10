@@ -1,0 +1,160 @@
+digraph ImplementPlan {
+    graph [
+        goal="(specify with --goal)",
+        label="Implement Plan Pipeline"
+    ]
+    node [shape=box]
+
+    // ── Lifecycle ──────────────────────────────────────────────
+    start           [shape=Mdiamond]
+    exit            [shape=Msquare]
+
+    // ── Workspace isolation ────────────────────────────────────
+    ws_create       [type="workspace.create", workspace_name="implement-plan"]
+
+    // ── Implementation ─────────────────────────────────────────
+    implement       [
+        label="Implement",
+        prompt="You are working on an existing TypeScript project.\n\
+Read the project structure, README, existing code, and tests to understand \
+the codebase thoroughly.\n\n\
+Then find and read the relevant plan document in ./docs/plans/ that matches \
+the goal below. Implement the plan fully.\n\n\
+Goal: $goal\n\n\
+Follow the project's existing patterns:\n\
+- TypeScript with ES modules (.js extensions in imports)\n\
+- Vitest for tests\n\
+- Conventional commit style\n\
+Write all necessary code changes and tests.",
+        goal_gate=true
+    ]
+
+    // ── Verification ───────────────────────────────────────────
+    selfci          [shape=parallelogram, label="selfci", tool_command="CANDIDATE=$(jj log -r 'latest(heads(::@ ~ empty()))' --no-graph -T 'commit_id.short()' --limit 1) && nix develop -c selfci check --candidate $CANDIDATE"]
+
+    // ── Code reviews (serial, skill-driven) ────────────────────
+    review_code     [
+        label="Review: code quality",
+        llm_model="gpt-5.3-codex",
+        llm_provider="openai-codex",
+        prompt_file=".pi/skills/typescript-code-review/SKILL.md",
+        prompt="Review the code changes made in this workspace.\n\
+Focus only on changed files for the goal: $goal\n\
+If there are issues that must be fixed before merging, output [STATUS: fail].\n\
+Otherwise output [STATUS: success]."
+    ]
+
+    review_security [
+        label="Review: security",
+        llm_model="gpt-5.3-codex",
+        llm_provider="openai-codex",
+        prompt_file=".pi/skills/typescript-security-review/SKILL.md",
+        prompt="Review the code changes made in this workspace for security concerns.\n\
+Focus only on changed files for the goal: $goal\n\
+If there are security issues that must be fixed, output [STATUS: fail].\n\
+Otherwise output [STATUS: success]."
+    ]
+
+    review_perf     [
+        label="Review: performance",
+        llm_model="gpt-5.3-codex",
+        llm_provider="openai-codex",
+        prompt_file=".pi/skills/typescript-performance-review/SKILL.md",
+        prompt="Review the code changes made in this workspace for performance.\n\
+Focus only on changed files for the goal: $goal\n\
+If there are performance issues that must be fixed, output [STATUS: fail].\n\
+Otherwise output [STATUS: success]."
+    ]
+
+    review_tests    [
+        label="Review: tests",
+        llm_model="gpt-5.3-codex",
+        llm_provider="openai-codex",
+        prompt_file=".pi/skills/typescript-test-review/SKILL.md",
+        prompt="Review the test coverage for changes in this workspace.\n\
+Focus only on changed files for the goal: $goal\n\
+If there are critical test gaps that must be addressed, output [STATUS: fail].\n\
+Otherwise output [STATUS: success]."
+    ]
+
+    // ── Quality gate ───────────────────────────────────────────
+    gate            [shape=diamond, label="All checks pass?"]
+
+    // ── Fix loop ───────────────────────────────────────────────
+    fix             [
+        label="Fix",
+        prompt="The previous checks or reviews failed. Read the error output \
+and review findings from context. Fix the issues — only change what is needed \
+to make selfci pass and address review findings.\n\n\
+IMPORTANT: Do NOT claim success or summarize what you fixed. Just make the \
+code changes and commit them. The CI and review stages will verify whether \
+the fixes are correct. Do NOT output [STATUS: success] or [STATUS: fail] — \
+your job is to edit code, not to assess the result.",
+        max_retries=2
+    ]
+
+    // ── Human review (final authority) ─────────────────────────
+    //    After all automated checks pass, the human reviews the
+    //    implementation. They can approve to merge, or send it
+    //    back for revision with feedback.
+    human_review    [
+        shape=hexagon,
+        label="Review implementation",
+        prompt="All automated checks have passed.\n\
+Review the implementation in the workspace. You can inspect the changes,\n\
+run the code, or look at test output.\n\
+Approve to merge, or send back for revision with feedback."
+    ]
+
+    // ── Revision from human feedback ───────────────────────────
+    revise          [
+        label="Revise implementation",
+        prompt="The human reviewer has requested changes to the implementation.\n\n\
+Check the pipeline context for human.gate.feedback to understand what needs \
+to change. Address all feedback — make code changes and commit them.\n\n\
+Goal: $goal\n\n\
+Follow the project's existing patterns:\n\
+- TypeScript with ES modules (.js extensions in imports)\n\
+- Vitest for tests\n\
+- Conventional commit style",
+        max_retries=2
+    ]
+
+    // ── Merge back ─────────────────────────────────────────────
+    ws_merge        [type="workspace.merge"]
+    ws_cleanup      [type="workspace.cleanup"]
+
+    // ── Flow ───────────────────────────────────────────────────
+    //
+    //  implement → selfci → reviews → gate
+    //                                   ├─ [Pass] → human_review
+    //                                   └─ [Fail] → fix → selfci → ...
+    //
+    //  human_review ├─ [Approve] → merge → exit
+    //               └─ [Revise]  → revise → selfci → reviews → ...
+    //
+    start        -> ws_create
+    ws_create    -> implement
+
+    implement    -> selfci
+    selfci       -> review_code  [condition="outcome=success"]
+    selfci       -> fix          [label="CI failed", condition="outcome!=success"]
+    review_code     -> review_security  [condition="outcome=success"]
+    review_code     -> gate             [condition="outcome!=success"]
+    review_security -> review_perf      [condition="outcome=success"]
+    review_security -> gate             [condition="outcome!=success"]
+    review_perf     -> review_tests     [condition="outcome=success"]
+    review_perf     -> gate             [condition="outcome!=success"]
+    review_tests    -> gate
+
+    gate         -> human_review  [label="Pass", condition="outcome=success"]
+    gate         -> fix           [label="Fail", condition="outcome!=success"]
+    fix          -> selfci
+
+    human_review -> ws_merge      [label="Approve"]
+    human_review -> revise        [label="Revise"]
+    revise       -> selfci
+
+    ws_merge     -> ws_cleanup
+    ws_cleanup   -> exit
+}

@@ -1,0 +1,176 @@
+digraph FeatureDev {
+    graph [
+        goal="(specify with --goal)",
+        label="Feature Development Pipeline"
+    ]
+    node [shape=box]
+
+    // ── Lifecycle ──────────────────────────────────────────────
+    start           [shape=Mdiamond]
+    exit            [shape=Msquare]
+
+    // ── Workspace isolation ────────────────────────────────────
+    ws_create       [type="workspace.create", workspace_name="feature-dev"]
+
+    // ── Planning ───────────────────────────────────────────────
+    plan            [
+        label="Plan",
+        llm_model="gpt-5.3-codex",
+        llm_provider="openai-codex",
+        prompt="You are working on an existing TypeScript project.\n\
+Read the project structure, README, existing CLI code, and tests to understand \
+the codebase. Then create a detailed implementation plan for the goal.\n\n\
+Goal: $goal\n\n\
+Your plan should include:\n\
+1. Which files need to change and why\n\
+2. The specific search order and resolution logic\n\
+3. Edge cases to handle\n\
+4. Test cases to write\n\n\
+Output the plan as a numbered list of concrete steps."
+    ]
+
+    // ── Plan review ────────────────────────────────────────────
+    human_review    [
+        shape=hexagon,
+        label="Review plan",
+        prompt="Review the implementation plan above. Approve to proceed or reject with feedback."
+    ]
+
+    plan_review     [
+        label="Review plan (LLM)",
+        llm_model="gpt-5.3-codex",
+        llm_provider="openai-codex",
+        prompt="You are a senior engineer reviewing an implementation plan.\n\n\
+Review the plan from the previous stage for:\n\
+1. Completeness — does it cover all cases?\n\
+2. Correctness — will the approach work with the existing codebase?\n\
+3. Risk — are there edge cases or breaking changes missed?\n\
+4. Scope — is it appropriately sized, or over/under-engineered?\n\n\
+If the plan is sound, output [STATUS: success] and a brief summary.\n\
+If it needs changes, output [STATUS: fail] with [FAILURE_REASON: ...] listing specific improvements.\n\
+Be concise and constructive."
+    ]
+
+    plan_gate       [shape=diamond, label="Plan approved?"]
+
+    plan_revise     [
+        label="Revise plan",
+        llm_model="gpt-5.3-codex",
+        llm_provider="openai-codex",
+        prompt="The plan needs revision. Check the pipeline context for \
+human.gate.feedback and plan_review.response to understand what needs to change. \
+Address all feedback and output the complete revised plan.",
+        max_retries=1
+    ]
+
+    // ── Implementation ─────────────────────────────────────────
+    implement       [
+        label="Implement",
+        prompt="Implement the plan from the previous stage.\n\n\
+Goal: $goal\n\n\
+Follow the project's existing patterns:\n\
+- TypeScript with ES modules (.js extensions in imports)\n\
+- Vitest for tests\n\
+- Conventional commit style\n\
+Write all necessary code changes and tests.",
+        goal_gate=true
+    ]
+
+    // ── Verification ───────────────────────────────────────────
+    selfci          [shape=parallelogram, label="selfci", tool_command="CANDIDATE=$(jj log -r 'latest(heads(::@ ~ empty()))' --no-graph -T 'commit_id.short()' --limit 1) && nix develop -c selfci check --candidate $CANDIDATE"]
+
+    // ── Code reviews (serial, skill-driven) ────────────────────
+    review_code     [
+        label="Review: code quality",
+        llm_model="gpt-5.3-codex",
+        llm_provider="openai-codex",
+        prompt_file=".pi/skills/typescript-code-review/SKILL.md",
+        prompt="Review the code changes made in this workspace.\n\
+Focus only on changed files for the goal: $goal\n\
+If there are issues that must be fixed before merging, output [STATUS: fail].\n\
+Otherwise output [STATUS: success]."
+    ]
+
+    review_security [
+        label="Review: security",
+        llm_model="gpt-5.3-codex",
+        llm_provider="openai-codex",
+        prompt_file=".pi/skills/typescript-security-review/SKILL.md",
+        prompt="Review the code changes made in this workspace for security concerns.\n\
+Focus only on changed files for the goal: $goal\n\
+If there are security issues that must be fixed, output [STATUS: fail].\n\
+Otherwise output [STATUS: success]."
+    ]
+
+    review_perf     [
+        label="Review: performance",
+        llm_model="gpt-5.3-codex",
+        llm_provider="openai-codex",
+        prompt_file=".pi/skills/typescript-performance-review/SKILL.md",
+        prompt="Review the code changes made in this workspace for performance.\n\
+Focus only on changed files for the goal: $goal\n\
+If there are performance issues that must be fixed, output [STATUS: fail].\n\
+Otherwise output [STATUS: success]."
+    ]
+
+    review_tests    [
+        label="Review: tests",
+        llm_model="gpt-5.3-codex",
+        llm_provider="openai-codex",
+        prompt_file=".pi/skills/typescript-test-review/SKILL.md",
+        prompt="Review the test coverage for changes in this workspace.\n\
+Focus only on changed files for the goal: $goal\n\
+If there are critical test gaps that must be addressed, output [STATUS: fail].\n\
+Otherwise output [STATUS: success]."
+    ]
+
+    // ── Quality gate ───────────────────────────────────────────
+    gate            [shape=diamond, label="All checks pass?"]
+
+    // ── Fix loop ───────────────────────────────────────────────
+    fix             [
+        label="Fix",
+        prompt="The previous checks or reviews failed. Read the error output \
+and review findings from context. Fix the issues — only change what is needed \
+to make selfci pass and address review findings.\n\n\
+IMPORTANT: Do NOT claim success or summarize what you fixed. Just make the \
+code changes and commit them. The CI and review stages will verify whether \
+the fixes are correct. Do NOT output [STATUS: success] or [STATUS: fail] — \
+your job is to edit code, not to assess the result.",
+        max_retries=2
+    ]
+
+    // ── Merge back ─────────────────────────────────────────────
+    ws_merge        [type="workspace.merge"]
+    ws_cleanup      [type="workspace.cleanup"]
+
+    // ── Flow ───────────────────────────────────────────────────
+    start        -> ws_create
+    ws_create    -> plan
+    plan         -> human_review
+    human_review -> plan_review  [label="Approve"]
+    human_review -> plan_revise  [label="Revise"]
+    plan_review  -> plan_gate
+
+    plan_gate    -> implement     [label="Approved", condition="outcome=success"]
+    plan_gate    -> plan_revise   [label="Revise",   condition="outcome!=success"]
+    plan_revise  -> human_review
+
+    implement    -> selfci
+    selfci       -> review_code  [condition="outcome=success"]
+    selfci       -> fix          [label="CI failed", condition="outcome!=success"]
+    review_code     -> review_security  [condition="outcome=success"]
+    review_code     -> gate             [condition="outcome!=success"]
+    review_security -> review_perf     [condition="outcome=success"]
+    review_security -> gate             [condition="outcome!=success"]
+    review_perf     -> review_tests    [condition="outcome=success"]
+    review_perf     -> gate             [condition="outcome!=success"]
+    review_tests    -> gate
+
+    gate         -> ws_merge      [label="Pass", condition="outcome=success"]
+    gate         -> fix           [label="Fail", condition="outcome!=success"]
+    fix          -> selfci
+
+    ws_merge     -> ws_cleanup
+    ws_cleanup   -> exit
+}

@@ -1,6 +1,7 @@
 node_modules/
 dist/
-.attractor/
+# Keep workflow definitions in VCS, ignore runtime artifacts
+.attractor/logs/
 *.tsbuildinfo
 .direnv/
 result
