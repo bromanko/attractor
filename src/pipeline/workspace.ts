@@ -386,14 +386,32 @@ export class WorkspaceMergeHandler implements Handler {
         try {
           await jj(["rebase", "-s", "@", "-d", mergedTip], repoRoot);
         } catch (err) {
-          context.appendLog(
-            `workspace.merge: failed to move default workspace head onto merged tip (${mergedTip}): ${String(err)}`,
-          );
-          return {
-            status: "fail",
-            failure_reason: "Merge conflicts detected while moving default workspace head. Resolve conflicts and retry.",
-            context_updates: { [WS_CONTEXT.MERGE_CONFLICTS]: "true" },
-          };
+          const errStr = String(err);
+
+          // This can happen on resume/retry when @ is already on the merged
+          // line and rebasing it onto a descendant is a no-op from a user
+          // perspective. Prefer placing @ directly on mergedTip and continue.
+          if (/Cannot rebase .* onto descendant/i.test(errStr)) {
+            context.appendLog(
+              `workspace.merge: @ already on merged line; switching to merged tip (${mergedTip})`,
+            );
+            try {
+              await jj(["edit", mergedTip], repoRoot);
+            } catch (editErr) {
+              context.appendLog(
+                `workspace.merge: failed to edit merged tip (${mergedTip}) after descendant rebase no-op: ${String(editErr)}`,
+              );
+            }
+          } else {
+            context.appendLog(
+              `workspace.merge: failed to move default workspace head onto merged tip (${mergedTip}): ${errStr}`,
+            );
+            return {
+              status: "fail",
+              failure_reason: "Merge conflicts detected while moving default workspace head. Resolve conflicts and retry.",
+              context_updates: { [WS_CONTEXT.MERGE_CONFLICTS]: "true" },
+            };
+          }
         }
       }
     } catch (err) {

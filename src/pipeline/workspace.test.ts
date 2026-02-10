@@ -929,6 +929,72 @@ describe("WorkspaceMergeHandler", () => {
     }
   });
 
+  it("treats descendant rebase while moving @ as a no-op and succeeds", async () => {
+    const calls: string[][] = [];
+    const jj: JjRunner & { calls: string[][] } = Object.assign(
+      async (args: string[]) => {
+        calls.push(args);
+
+        if (
+          args[0] === "log" &&
+          args[1] === "-r" &&
+          args[2] === "ancestors(my-feature@) & mutable() & ~ancestors(default@)"
+        ) {
+          return "commit2\ncommit1";
+        }
+
+        if (
+          args[0] === "log" &&
+          args[1] === "-r" &&
+          args[2] === "@" &&
+          args.includes("--limit")
+        ) {
+          return "default1234";
+        }
+
+        if (args[0] === "rebase" && args[1] === "-s" && args[2] === "commit1" && args[3] === "-d" && args[4] === "@") {
+          return "rebased";
+        }
+
+        if (
+          args[0] === "log" &&
+          args[1] === "-r" &&
+          args[2] === "heads(descendants(default1234) & mutable() & ~default1234)"
+        ) {
+          return "merged5678\n";
+        }
+
+        if (args[0] === "rebase" && args[1] === "-s" && args[2] === "@" && args[3] === "-d" && args[4] === "merged5678") {
+          throw new Error("Cannot rebase abcd1234 onto descendant merged5678");
+        }
+
+        if (args[0] === "edit" && args[1] === "merged5678") {
+          return "";
+        }
+
+        return "";
+      },
+      { calls },
+    );
+
+    const logsRoot = await mkdtemp(join(tmpdir(), "ws-test-"));
+    try {
+      const handler = new WorkspaceMergeHandler(jj);
+      const context = contextWithWorkspace();
+
+      const outcome = await handler.execute(makeNode({ id: "merge-descendant-noop" }), context, makeGraph(), logsRoot);
+
+      expect(outcome.status).toBe("success");
+      expect(outcome.notes).toContain("merged tip merged5678");
+      expect(context.logs.some((entry) => entry.includes("already on merged line"))).toBe(true);
+
+      const editCall = jj.calls.find((c) => c[0] === "edit" && c[1] === "merged5678");
+      expect(editCall).toBeDefined();
+    } finally {
+      await rm(logsRoot, { recursive: true, force: true });
+    }
+  });
+
   it("fails when moving @ onto merged tip reports conflicts", async () => {
     const calls: string[][] = [];
     const jj: JjRunner & { calls: string[][] } = Object.assign(
