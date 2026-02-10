@@ -47,7 +47,10 @@ export function renderMarkdown(text: string): string {
   try {
     const rendered = marked.parse(text);
     if (typeof rendered === "string") {
-      return rendered.trimEnd();
+      // marked-terminal can emit very loose spacing (especially for nested
+      // lists and LLM-generated markdown). Collapse 3+ blank lines so review
+      // prompts stay readable in the terminal.
+      return rendered.replace(/\n{3,}/g, "\n\n").trimEnd();
     }
     return text;
   } catch {
@@ -123,6 +126,10 @@ export class Spinner {
   private _startTime = 0;
   private _message = "";
   private _model: string | undefined;
+
+  isRunning(): boolean {
+    return this._interval !== null;
+  }
 
   /**
    * Start spinning with the given stage message.

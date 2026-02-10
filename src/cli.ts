@@ -10,6 +10,7 @@
 
 import { readFile } from "node:fs/promises";
 import { resolve, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { existsSync } from "node:fs";
 import { parseDot, validate, validateOrRaise, runPipeline, PiBackend, AutoApproveInterviewer } from "./pipeline/index.js";
 import type { PipelineEvent, Diagnostic, CodergenBackend, ToolMode, Interviewer, Checkpoint, Graph } from "./pipeline/index.js";
@@ -26,6 +27,8 @@ import {
   Spinner,
   formatDuration,
 } from "./cli-renderer.js";
+
+const MARKDOWN_HINT_RE = /[#*`\[\]\n]/;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -97,8 +100,12 @@ function severityIcon(severity: Diagnostic["severity"]): string {
  * Resolve the per-stage model for a node, if it differs from the default.
  * Returns undefined if the node uses the default model.
  */
-function getStageModel(nodeId: string, graph: Graph, defaultModel: string): string | undefined {
-  const node = graph.nodes.find((n) => n.id === nodeId);
+function getStageModel(
+  nodeId: string,
+  nodeById: Map<string, Graph["nodes"][number]>,
+  defaultModel: string,
+): string | undefined {
+  const node = nodeById.get(nodeId);
   if (!node) return undefined;
   const nodeModel = node.attrs.llm_model as string | undefined;
   if (nodeModel && nodeModel !== defaultModel) return nodeModel;
@@ -138,7 +145,7 @@ async function cmdValidate(filePath: string): Promise<void> {
   if (errors.length > 0) process.exit(1);
 }
 
-async function cmdRun(
+export async function cmdRun(
   filePath: string,
   args: Record<string, string | boolean>,
 ): Promise<void> {
@@ -237,8 +244,11 @@ async function cmdRun(
     }
   }
 
+  const nodeById = new Map(graph.nodes.map((n) => [n.id, n] as const));
+
   const startTime = Date.now();
   const spinner = new Spinner();
+  let spinnerStage: string | null = null;
 
   const result = await runPipeline({
     graph,
@@ -274,25 +284,54 @@ async function cmdRun(
             console.log(`  ♻️  Resuming at: ${d.from}\n`);
             break;
           case "stage_started": {
-            const stageModel = getStageModel(String(d.name), graph, modelName);
-            spinner.start(String(d.name), stageModel);
+            const stageName = String(d.name);
+            const node = nodeById.get(stageName);
+            const isHumanGate = node?.attrs.shape === "hexagon" || node?.attrs.type === "wait.human";
+
+            if (isHumanGate) {
+              console.log(`  🙋 ${stageName}`);
+            } else {
+              if (spinnerStage != null && spinner.isRunning()) {
+                spinner.stop("success");
+                spinnerStage = null;
+              }
+              const stageModel = getStageModel(stageName, nodeById, modelName);
+              spinner.start(stageName, stageModel);
+              spinnerStage = stageName;
+            }
             break;
           }
-          case "stage_completed":
-            spinner.stop("success");
+          case "stage_completed": {
+            const stageName = String(d.name ?? "");
+            if (spinnerStage === stageName && spinner.isRunning()) {
+              spinner.stop("success");
+              spinnerStage = null;
+            }
             break;
+          }
           case "stage_failed": {
+            const stageName = String(d.name ?? "");
             const errorMsg = d.error ? String(d.error) : undefined;
             // Render failure reason as markdown if it contains markdown formatting
-            const rendered = errorMsg && /[#*`\[\]\n]/.test(errorMsg)
+            const rendered = errorMsg && MARKDOWN_HINT_RE.test(errorMsg)
               ? renderMarkdown(errorMsg)
               : errorMsg;
-            spinner.stop("fail", rendered);
+            if (spinnerStage === stageName && spinner.isRunning()) {
+              spinner.stop("fail", rendered);
+              spinnerStage = null;
+            } else {
+              console.log(`  ✘ ${stageName}${rendered ? ` — ${rendered}` : ""}`);
+            }
             break;
           }
-          case "stage_retrying":
-            spinner.stop("retry");
+          case "stage_retrying": {
+            const stageName = String(d.name ?? "");
+            if (spinnerStage === stageName && spinner.isRunning()) {
+              spinner.stop("retry");
+              spinnerStage = null;
+            }
             break;
+          }
           case "pipeline_completed":
             console.log(`\n  🏁 Pipeline completed (${formatDuration(Date.now() - startTime)})`);
             break;
@@ -374,7 +413,12 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err) => {
-  console.error(`Fatal: ${err.message ?? err}`);
-  process.exit(1);
-});
+const isDirectRun = process.argv[1] != null
+  && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (isDirectRun) {
+  main().catch((err) => {
+    console.error(`Fatal: ${err.message ?? err}`);
+    process.exit(1);
+  });
+}

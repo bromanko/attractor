@@ -237,6 +237,8 @@ export type Option = {
 
 export type Question = {
   text: string;
+  /** Optional markdown content to display before collecting an answer. */
+  details_markdown?: string;
   type: QuestionType;
   options: Option[];
   default_answer?: Answer;

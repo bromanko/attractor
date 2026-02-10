@@ -59,7 +59,10 @@ output [STATUS: fail] with [FAILURE_REASON: ...] listing the critical issues onl
         shape=hexagon,
         label="Review plan + critique",
         prompt="Review the plan and the LLM critique above.\n\
-You have final authority — accept the plan as-is, or send it back for revision."
+You have final authority — accept the plan as-is, or send it back for revision.",
+        review_markdown_keys="plan._full_response,plan_review._full_response",
+        draft_context_key="plan._full_response",
+        draft_path="docs/plans/<slug>.draft.md"
     ]
 
     // ── Revision ───────────────────────────────────────────────

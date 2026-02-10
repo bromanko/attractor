@@ -8,6 +8,7 @@
 
 import { createInterface } from "node:readline";
 import type { Interviewer, Question, Answer, Option } from "./pipeline/types.js";
+import { renderMarkdown } from "./cli-renderer.js";
 
 /**
  * Read a single line from stdin. Returns the trimmed input.
@@ -35,6 +36,13 @@ export class InteractiveInterviewer implements Interviewer {
   async ask(question: Question): Promise<Answer> {
     console.error(); // blank line before question
     console.error(`  🙋 ${question.text}`);
+
+    if (question.details_markdown) {
+      const rendered = renderMarkdown(question.details_markdown);
+      console.error();
+      console.error(rendered);
+      console.error();
+    }
 
     switch (question.type) {
       case "yes_no":

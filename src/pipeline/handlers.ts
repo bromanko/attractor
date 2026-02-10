@@ -3,7 +3,7 @@
  */
 
 import { writeFile, mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { join, dirname, resolve, isAbsolute, normalize, relative, sep } from "node:path";
 import {
   SHAPE_TO_TYPE,
   type Handler, type GraphNode, type Context, type Graph, type Outcome,
@@ -55,6 +55,124 @@ function expandVariables(text: string, graph: Graph, context: Context): string {
   });
 
   return result;
+}
+
+function parseCsvAttr(value: unknown): string[] {
+  if (typeof value !== "string") return [];
+  return value.split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+function slugifyGoal(goal: string): string {
+  const slug = goal
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+  return slug || "plan";
+}
+
+function reviewSectionTitle(key: string): string {
+  if (key.startsWith("plan_review")) return "LLM Critique";
+  if (key.startsWith("plan.")) return "Plan Draft";
+  return key;
+}
+
+function collectNonEmptyContextText(keys: string[], context: Context): Map<string, string> {
+  const values = new Map<string, string>();
+  for (const key of keys) {
+    const raw = context.get(key);
+    if (raw == null) continue;
+    const text = String(raw).trim();
+    if (!text) continue;
+    values.set(key, text);
+  }
+  return values;
+}
+
+function pickReviewKeys(node: GraphNode, context: Context): string[] {
+  const explicit = parseCsvAttr(node.attrs.review_markdown_keys);
+  if (explicit.length > 0) return explicit;
+
+  const defaults = [
+    "plan._full_response",
+    "plan.response",
+    "plan_review._full_response",
+    "plan_review.response",
+  ];
+  const nonEmptyValues = collectNonEmptyContextText(defaults, context);
+  return defaults.filter((key) => nonEmptyValues.has(key));
+}
+
+function buildReviewMarkdown(
+  keys: string[],
+  context: Context,
+  preloadedTexts?: Map<string, string>,
+): string | undefined {
+  const texts = preloadedTexts ?? collectNonEmptyContextText(keys, context);
+  const sections: string[] = [];
+
+  for (const key of keys) {
+    const text = texts.get(key);
+    if (!text) continue;
+    sections.push(`## ${reviewSectionTitle(key)}\n\n${text}`);
+  }
+
+  if (sections.length === 0) return undefined;
+  return sections.join("\n\n---\n\n");
+}
+
+async function writeDraftPlan(
+  node: GraphNode,
+  context: Context,
+  graph: Graph,
+  reviewKeys?: string[],
+): Promise<string | undefined> {
+  const resolvedReviewKeys = reviewKeys ?? pickReviewKeys(node, context);
+  const configuredKey = node.attrs.draft_context_key;
+  const draftKey = typeof configuredKey === "string"
+    ? configuredKey
+    : resolvedReviewKeys.find((k) => k.startsWith("plan."));
+
+  if (!draftKey) return undefined;
+
+  const draft = context.get(draftKey);
+  if (draft == null || String(draft).trim().length === 0) return undefined;
+
+  const goal = String(graph.attrs.goal ?? context.get("graph.goal") ?? "plan");
+  const slug = slugifyGoal(goal);
+  const rawDraftPath = node.attrs.draft_path;
+  const draftPathTemplate =
+    typeof rawDraftPath === "string" && rawDraftPath.trim().length > 0
+      ? rawDraftPath
+      : "docs/plans/<slug>.draft.md";
+  const draftPath = draftPathTemplate.replace(/<slug>/g, slug);
+
+  if (isAbsolute(draftPath)) {
+    throw new Error("Invalid draft_path: absolute paths are not allowed");
+  }
+
+  const normalizedDraftPath = normalize(draftPath);
+  const segments = normalizedDraftPath.split(sep).filter(Boolean);
+  if (segments.includes("..")) {
+    throw new Error("Invalid draft_path: path traversal is not allowed");
+  }
+
+  const baseDir =
+    context.getString(WS_CONTEXT.PATH) ||
+    context.getString(WS_CONTEXT.REPO_ROOT) ||
+    process.cwd();
+
+  const allowedRoot = resolve(baseDir, "docs/plans");
+  const absPath = resolve(baseDir, normalizedDraftPath);
+  const relToAllowedRoot = relative(allowedRoot, absPath);
+  if (relToAllowedRoot.startsWith("..") || isAbsolute(relToAllowedRoot)) {
+    throw new Error("Invalid draft_path: must stay under docs/plans");
+  }
+
+  await mkdir(dirname(absPath), { recursive: true });
+  await writeFile(absPath, String(draft), "utf-8");
+
+  return absPath;
 }
 
 // ---------------------------------------------------------------------------
@@ -151,8 +269,22 @@ export class WaitForHumanHandler implements Handler {
       return { key, label };
     });
 
+    const promptText = expandVariables(
+      String(node.attrs.prompt || node.attrs.label || "Select an option:"),
+      graph,
+      context,
+    );
+
+    const reviewKeys = pickReviewKeys(node, context);
+    const reviewTexts = collectNonEmptyContextText(reviewKeys, context);
+    const detailsMarkdown = buildReviewMarkdown(reviewKeys, context, reviewTexts);
+    const draftPath = await writeDraftPlan(node, context, graph, reviewKeys);
+
     const question: Question = {
-      text: node.attrs.label || "Select an option:",
+      text: draftPath
+        ? `${promptText}\nDraft file: ${draftPath}`
+        : promptText,
+      details_markdown: detailsMarkdown,
       type: "multiple_choice",
       options,
       stage: node.id,
@@ -171,13 +303,33 @@ export class WaitForHumanHandler implements Handler {
     const selected = answer.selected_option ?? options.find((o) => o.key === answer.value) ?? options[0];
     const targetEdge = edges.find((e) => (e.attrs.label || e.to) === selected.label);
 
+    const shouldAskFeedback = /revise/i.test(selected.label);
+    let feedback: string | undefined;
+    if (shouldAskFeedback) {
+      try {
+        const feedbackAnswer = await this._interviewer.ask({
+          text: "What should be revised in the plan?",
+          type: "freeform",
+          options: [],
+          stage: node.id,
+        });
+        feedback = feedbackAnswer.text ?? String(feedbackAnswer.value ?? "").trim();
+      } catch {
+        // Best effort: keep revision flow working even if a non-interactive
+        // interviewer implementation does not handle freeform prompts.
+      }
+    }
+
     return {
       status: "success",
       suggested_next_ids: targetEdge ? [targetEdge.to] : [edges[0].to],
       context_updates: {
         "human.gate.selected": selected.key,
         "human.gate.label": selected.label,
+        ...(feedback != null ? { "human.gate.feedback": feedback } : {}),
+        ...(draftPath ? { "human.gate.draft_path": draftPath } : {}),
       },
+      notes: draftPath ? `Draft saved at ${draftPath}` : undefined,
     };
   }
 }
