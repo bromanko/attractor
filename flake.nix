@@ -18,7 +18,7 @@
           pname = "attractor";
           version = "0.1.0";
           src = ./.;
-          npmDepsHash = "sha256-z7lJAVhr9cJZTcdfR0Kz8XpEpeIeV76zy7+bA2B/OTA=";
+          npmDepsHash = "sha256-RaBumTkFYyfxk0hx4+YYogirsrcMyg9ZC8yyqxgRxXA=";
           buildPhase = ''
             npm run build
           '';

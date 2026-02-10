@@ -20,6 +20,11 @@ function job_build() {
   npm run build
 }
 
+function job_nix_build() {
+  selfci step start "nix build"
+  nix build
+}
+
 case "$SELFCI_JOB_NAME" in
   main)
     # install dependencies first (shared by all jobs)
@@ -28,10 +33,12 @@ case "$SELFCI_JOB_NAME" in
     selfci job start "lint"
     selfci job start "test"
     selfci job start "build"
+    selfci job start "nix-build"
 
     selfci job wait "lint"
     selfci job wait "test"
     selfci job wait "build"
+    selfci job wait "nix-build"
     ;;
 
   lint)
@@ -44,6 +51,10 @@ case "$SELFCI_JOB_NAME" in
 
   build)
     nix develop -c bash -c "npm ci --ignore-scripts && $(declare -f job_build); job_build"
+    ;;
+
+  nix-build)
+    job_nix_build
     ;;
 
   *)
