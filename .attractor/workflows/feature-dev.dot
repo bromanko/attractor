@@ -84,7 +84,7 @@ Write all necessary code changes and tests.",
         label="Review: code quality",
         llm_model="gpt-5.3-codex",
         llm_provider="openai-codex",
-        prompt_file=".pi/skills/typescript-code-review/SKILL.md",
+        prompt_file=".pi/skills/attractor-typescript-code-review/SKILL.md",
         prompt="Review the code changes made in this workspace.\n\
 Focus only on changed files for the goal: $goal\n\
 If there are issues that must be fixed before merging, output [STATUS: fail].\n\
@@ -95,7 +95,7 @@ Otherwise output [STATUS: success]."
         label="Review: security",
         llm_model="gpt-5.3-codex",
         llm_provider="openai-codex",
-        prompt_file=".pi/skills/typescript-security-review/SKILL.md",
+        prompt_file=".pi/skills/attractor-typescript-security-review/SKILL.md",
         prompt="Review the code changes made in this workspace for security concerns.\n\
 Focus only on changed files for the goal: $goal\n\
 If there are security issues that must be fixed, output [STATUS: fail].\n\
@@ -106,7 +106,7 @@ Otherwise output [STATUS: success]."
         label="Review: performance",
         llm_model="gpt-5.3-codex",
         llm_provider="openai-codex",
-        prompt_file=".pi/skills/typescript-performance-review/SKILL.md",
+        prompt_file=".pi/skills/attractor-typescript-performance-review/SKILL.md",
         prompt="Review the code changes made in this workspace for performance.\n\
 Focus only on changed files for the goal: $goal\n\
 If there are performance issues that must be fixed, output [STATUS: fail].\n\
@@ -117,7 +117,7 @@ Otherwise output [STATUS: success]."
         label="Review: tests",
         llm_model="gpt-5.3-codex",
         llm_provider="openai-codex",
-        prompt_file=".pi/skills/typescript-test-review/SKILL.md",
+        prompt_file=".pi/skills/attractor-typescript-test-review/SKILL.md",
         prompt="Review the test coverage for changes in this workspace.\n\
 Focus only on changed files for the goal: $goal\n\
 If there are critical test gaps that must be addressed, output [STATUS: fail].\n\

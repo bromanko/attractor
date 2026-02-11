@@ -1,5 +1,5 @@
 ---
-name: typescript-test-review
+name: attractor-typescript-test-review
 description: This skill should be used when the user asks for "test review", "test coverage", "improve TypeScript tests", "review tests", "test quality", "testing audit", or wants analysis of TypeScript test suites for coverage gaps, edge cases, and testing best practices.
 ---
 

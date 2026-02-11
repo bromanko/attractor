@@ -1,5 +1,5 @@
 ---
-name: typescript-performance-review
+name: attractor-typescript-performance-review
 description: This skill should be used when the user asks to "review performance", "optimize TypeScript", "TypeScript performance", "performance audit", "find bottlenecks", "improve efficiency", or wants analysis of TypeScript code performance focusing on runtime hotspots, rendering efficiency, and data handling.
 ---
 

@@ -1,5 +1,5 @@
 ---
-name: typescript-code-review
+name: attractor-typescript-code-review
 description: This skill should be used when the user asks to "review TypeScript code", "typescript code quality", "TypeScript idioms check", "review my TypeScript", "check code quality", or wants feedback on TypeScript patterns, typing strategy, and module organization.
 ---
 

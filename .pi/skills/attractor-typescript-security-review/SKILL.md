@@ -1,5 +1,5 @@
 ---
-name: typescript-security-review
+name: attractor-typescript-security-review
 description: This skill should be used when the user asks for "security review", "vulnerability scan", "audit TypeScript security", "security audit", "find vulnerabilities", "check for security issues", or wants a deep security analysis of TypeScript code including input validation, auth boundaries, and dependency risks.
 ---
 
