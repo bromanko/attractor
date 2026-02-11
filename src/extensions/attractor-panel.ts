@@ -40,6 +40,10 @@ interface StageEntry {
   error?: string;
   startedAt?: number;
   completedAt?: number;
+  /** Accumulated streaming text from the LLM for this stage. */
+  streamText?: string;
+  /** Active tool calls within this stage's agent session. */
+  activeTools?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -55,6 +59,7 @@ export class AttractorPanel {
   private _stages: StageEntry[] = [];
   private _pipelineRunning = false;
   private _lastUsage: RunUsageSummary | undefined;
+  private _keepWidget = false;
 
   constructor(ui: PanelUI, theme: PanelTheme) {
     this._ui = ui;
@@ -96,6 +101,11 @@ export class AttractorPanel {
           entry.completedAt = Date.now();
         }
         this._renderWidget();
+
+        // Notify with any available output details
+        if (d.notes) {
+          this._ui.notify(`${this._theme.fg("success", "✔")} ${name}: ${d.notes}`, "info");
+        }
         break;
       }
 
@@ -108,6 +118,9 @@ export class AttractorPanel {
           entry.completedAt = Date.now();
         }
         this._renderWidget();
+
+        // Emit a detailed failure notification
+        this._notifyStageFailure(name, d);
         break;
       }
 
@@ -125,14 +138,23 @@ export class AttractorPanel {
         this._renderWidget();
         break;
 
-      case "pipeline_failed":
+      case "pipeline_failed": {
         this._pipelineRunning = false;
+        this._keepWidget = true;
         this._ui.setStatus(STATUS_KEY, this._theme.fg("error", "✘ failed"));
         this._renderWidget();
+        if (d.error) {
+          this._ui.notify(
+            `${this._theme.fg("error", "✘ Pipeline failed:")} ${d.error}`,
+            "error",
+          );
+        }
         break;
+      }
 
       case "pipeline_cancelled":
         this._pipelineRunning = false;
+        this._keepWidget = true;
         this._ui.setStatus(STATUS_KEY, this._theme.fg("warning", "⊘ cancelled"));
         this._renderWidget();
         break;
@@ -140,6 +162,42 @@ export class AttractorPanel {
       case "usage_update": {
         const summary = d.summary as RunUsageSummary | undefined;
         if (summary) this._lastUsage = summary;
+        break;
+      }
+
+      case "agent_text": {
+        const stageId = String(d.stageId);
+        const entry = this._findStage(stageId);
+        if (entry) {
+          entry.streamText = (entry.streamText ?? "") + String(d.text);
+          this._ui.setStatus(STATUS_KEY, this._theme.fg("warning", `▶ ${stageId} — streaming`));
+          this._renderWidget();
+        }
+        break;
+      }
+
+      case "agent_tool_start": {
+        const stageId = String(d.stageId);
+        const toolName = String(d.toolName);
+        const entry = this._findStage(stageId);
+        if (entry) {
+          if (!entry.activeTools) entry.activeTools = [];
+          entry.activeTools.push(toolName);
+          this._ui.setStatus(STATUS_KEY, this._theme.fg("warning", `▶ ${stageId} → ${toolName}`));
+          this._renderWidget();
+        }
+        break;
+      }
+
+      case "agent_tool_end": {
+        const stageId = String(d.stageId);
+        const toolName = String(d.toolName);
+        const entry = this._findStage(stageId);
+        if (entry && entry.activeTools) {
+          const idx = entry.activeTools.indexOf(toolName);
+          if (idx >= 0) entry.activeTools.splice(idx, 1);
+          this._renderWidget();
+        }
         break;
       }
     }
@@ -153,15 +211,48 @@ export class AttractorPanel {
       ? ` | ${formatCost(this._lastUsage.totals.cost)}`
       : "";
 
-    const msg = `${icon} Pipeline ${result.status}\nPath: ${path}${costLine}`;
+    const lines: string[] = [
+      `${icon} Pipeline ${result.status}`,
+      `Path: ${path}${costLine}`,
+    ];
+
+    // Include failure summary details when available
+    if (result.status === "fail" && result.failureSummary) {
+      const fs = result.failureSummary;
+      lines.push("");
+      lines.push(`Failed stage: ${fs.failedNode}`);
+      lines.push(`Failure class: ${fs.failureClass}`);
+      lines.push(`Digest: ${fs.digest}`);
+      if (fs.firstFailingCheck) {
+        lines.push(`First failing check: ${fs.firstFailingCheck}`);
+      }
+      if (fs.rerunCommand) {
+        lines.push(`Rerun: ${fs.rerunCommand}`);
+      }
+      if (fs.logsPath) {
+        lines.push(`Logs: ${fs.logsPath}`);
+      }
+      if (fs.failureReason && fs.failureReason !== fs.digest) {
+        lines.push(`Reason: ${fs.failureReason}`);
+      }
+    } else if (result.status === "fail" && result.lastOutcome?.failure_reason) {
+      lines.push("");
+      lines.push(`Reason: ${result.lastOutcome.failure_reason}`);
+    }
+
     const type = result.status === "success" ? "info" : result.status === "cancelled" ? "warning" : "error";
-    this._ui.notify(msg, type as "info" | "warning" | "error");
+    this._ui.notify(lines.join("\n"), type as "info" | "warning" | "error");
   }
 
-  /** Tear down panel UI elements. */
+  /** Tear down panel UI elements.
+   *  Keeps the widget visible after failure/cancellation so the user can
+   *  review stage history. Only clears on success (clean exit). */
   dispose(): void {
     this._ui.setStatus(STATUS_KEY, undefined);
-    this._ui.setWidget(WIDGET_KEY, undefined);
+    // Keep widget visible after failure so stages remain readable
+    if (!this._keepWidget) {
+      this._ui.setWidget(WIDGET_KEY, undefined);
+    }
   }
 
   // -----------------------------------------------------------------------
@@ -179,6 +270,43 @@ export class AttractorPanel {
   // -----------------------------------------------------------------------
   // Private
   // -----------------------------------------------------------------------
+
+  private _notifyStageFailure(name: string, data: Record<string, unknown>): void {
+    const lines: string[] = [`${this._theme.fg("error", "✘")} Stage failed: ${this._theme.bold(name)}`];
+
+    const tf = data.tool_failure as Record<string, unknown> | undefined;
+    if (tf) {
+      // Rich tool failure details
+      if (tf.command) lines.push(`Command: ${tf.command}`);
+      if (tf.exitCode != null) lines.push(`Exit code: ${tf.exitCode}`);
+      if (tf.signal) lines.push(`Signal: ${tf.signal}`);
+      if (tf.durationMs != null) lines.push(`Duration: ${formatMs(tf.durationMs as number)}`);
+      if (tf.firstFailingCheck) lines.push(`First failing check: ${tf.firstFailingCheck}`);
+
+      const stderrTail = tf.stderrTail as string | undefined;
+      if (stderrTail && stderrTail.trim()) {
+        lines.push("");
+        lines.push("stderr:");
+        lines.push(stderrTail.trim());
+      }
+
+      const stdoutTail = tf.stdoutTail as string | undefined;
+      if (stdoutTail && stdoutTail.trim() && !stderrTail?.trim()) {
+        lines.push("");
+        lines.push("stdout:");
+        lines.push(stdoutTail.trim());
+      }
+    } else if (data.error) {
+      lines.push(String(data.error));
+    }
+
+    if (tf?.artifactPaths) {
+      const paths = tf.artifactPaths as Record<string, string>;
+      if (paths.stderr) lines.push(`\nFull logs: ${paths.stderr}`);
+    }
+
+    this._ui.notify(lines.join("\n"), "error");
+  }
 
   private _findStage(name: string): StageEntry | undefined {
     // Find the most recent entry with this name (handles retries)
@@ -201,6 +329,17 @@ export class AttractorPanel {
       const errorSuffix = s.error ? ` — ${s.error}` : "";
       const color = this._stateColor(s.state);
       lines.push(this._theme.fg(color, `${icon} ${s.name}${elapsed}${errorSuffix}`));
+
+      // Show active tools for running stages
+      if (s.state === "running" && s.activeTools && s.activeTools.length > 0) {
+        lines.push(this._theme.fg("muted", `    ↳ ${s.activeTools.join(", ")}`));
+      }
+
+      // Show streaming LLM text preview for running stages
+      if (s.state === "running" && s.streamText) {
+        const preview = truncateStreamPreview(s.streamText, 200);
+        lines.push(this._theme.fg("dim", `    ${preview}`));
+      }
     }
 
     this._ui.setWidget(WIDGET_KEY, lines.length > 0 ? lines : undefined);
@@ -232,6 +371,16 @@ export class AttractorPanel {
 // ---------------------------------------------------------------------------
 // Formatting helpers
 // ---------------------------------------------------------------------------
+
+/** Show the last N chars of streaming text, collapsed to a single line. */
+function truncateStreamPreview(text: string, maxLen: number): string {
+  // Take the last portion and collapse to single line
+  const tail = text.length > maxLen ? text.slice(-maxLen) : text;
+  const oneLine = tail.replace(/\n/g, " ").replace(/\s+/g, " ").trim();
+  return oneLine.length > maxLen
+    ? "…" + oneLine.slice(-(maxLen - 1))
+    : oneLine;
+}
 
 function formatMs(ms: number): string {
   const secs = Math.floor(ms / 1000);

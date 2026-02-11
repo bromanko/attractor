@@ -177,12 +177,15 @@ async function handleRun(
     return;
   }
 
-  // Build backend (reuses CLI model/provider defaults)
   const modelName = "claude-opus-4-6";
   const providerName = "anthropic";
   const logsRoot = cmd.logs ?? ".attractor/logs";
   const toolMode: ToolMode = (cmd.tools as ToolMode) ?? "coding";
 
+  // Set up panel early so backend can stream events to it
+  const panel = new AttractorPanel(ctx.ui, ctx.ui.theme);
+
+  // Build backend (reuses CLI model/provider defaults)
   let backend: CodergenBackend;
   try {
     const authStorage = new AuthStorage();
@@ -194,8 +197,50 @@ async function handleRun(
       toolMode,
       authStorage,
       modelRegistry,
+      onStageEvent: (nodeId, agentEvent) => {
+        // Bridge agent session events to pipeline events for the panel
+        const ts = new Date().toISOString();
+        switch (agentEvent.type) {
+          case "message_update": {
+            const msg = agentEvent.assistantMessageEvent as { type: string; delta?: string; content?: string };
+            if (msg.type === "text_delta" && msg.delta) {
+              panel.handleEvent({
+                kind: "agent_text",
+                timestamp: ts,
+                data: { stageId: nodeId, text: msg.delta },
+              });
+            }
+            break;
+          }
+          case "tool_execution_start":
+            panel.handleEvent({
+              kind: "agent_tool_start",
+              timestamp: ts,
+              data: {
+                stageId: nodeId,
+                toolName: agentEvent.toolName,
+                toolCallId: agentEvent.toolCallId,
+                args: agentEvent.args,
+              },
+            });
+            break;
+          case "tool_execution_end":
+            panel.handleEvent({
+              kind: "agent_tool_end",
+              timestamp: ts,
+              data: {
+                stageId: nodeId,
+                toolName: agentEvent.toolName,
+                toolCallId: agentEvent.toolCallId,
+                isError: agentEvent.isError,
+              },
+            });
+            break;
+        }
+      },
     });
   } catch (err) {
+    panel.dispose();
     ctx.ui.notify(`Backend configuration error: ${err}`, "error");
     return;
   }
@@ -213,6 +258,7 @@ async function handleRun(
       try {
         checkpoint = JSON.parse(await readFile(cpPath, "utf-8")) as Checkpoint;
       } catch (err) {
+        panel.dispose();
         ctx.ui.notify(`Error reading checkpoint: ${err}`, "error");
         return;
       }
@@ -220,9 +266,6 @@ async function handleRun(
       ctx.ui.notify("No checkpoint found, starting fresh.", "info");
     }
   }
-
-  // Set up panel
-  const panel = new AttractorPanel(ctx.ui, ctx.ui.theme);
 
   // Cancellation
   const abortController = new AbortController();

@@ -227,7 +227,10 @@ export type PipelineEventKind =
   | "interview_started"
   | "interview_completed"
   | "interview_timeout"
-  | "usage_update";
+  | "usage_update"
+  | "agent_text"
+  | "agent_tool_start"
+  | "agent_tool_end";
 
 export type PipelineEvent = {
   kind: PipelineEventKind;

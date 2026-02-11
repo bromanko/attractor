@@ -646,7 +646,12 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
       node.attrs.shape === "diamond" || node.attrs.type === "conditional";
 
     if (isConditional || outcome.status === "success" || outcome.status === "partial_success") {
-      emit(config, "stage_completed", { name: node.id, index: completedNodes.length - 1 });
+      const completedData: Record<string, unknown> = {
+        name: node.id,
+        index: completedNodes.length - 1,
+      };
+      if (outcome.notes) completedData.notes = outcome.notes;
+      emit(config, "stage_completed", completedData);
     } else {
       const stageFailedData: Record<string, unknown> = {
         name: node.id,

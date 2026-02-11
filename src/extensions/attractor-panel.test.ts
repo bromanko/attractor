@@ -131,10 +131,144 @@ describe("AttractorPanel", () => {
     );
   });
 
-  it("disposes panel UI", () => {
+  it("shows detailed failure summary with failureSummary", () => {
+    panel.showSummary({
+      status: "fail",
+      completedNodes: ["start", "selfci_check"],
+      failureSummary: {
+        failedNode: "selfci_check",
+        failureClass: "test_failure",
+        digest: "Tests: 1 failed, 0 passed",
+        firstFailingCheck: "smoke/selfci structured error",
+        rerunCommand: "bash -lc 'selfci'",
+        logsPath: "/tmp/logs/selfci_check",
+      },
+      usageSummary: { stages: [], totals: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, total_tokens: 0, cost: 0 } },
+    });
+    const lastNotify = ui.calls.notify[ui.calls.notify.length - 1];
+    expect(lastNotify[0]).toContain("selfci_check");
+    expect(lastNotify[0]).toContain("test_failure");
+    expect(lastNotify[0]).toContain("Tests: 1 failed, 0 passed");
+    expect(lastNotify[0]).toContain("smoke/selfci structured error");
+    expect(lastNotify[0]).toContain("bash -lc 'selfci'");
+    expect(lastNotify[1]).toBe("error");
+  });
+
+  it("shows failure reason from lastOutcome when no failureSummary", () => {
+    panel.showSummary({
+      status: "fail",
+      completedNodes: ["start", "plan"],
+      lastOutcome: { status: "fail", failure_reason: "LLM rate limited" },
+      usageSummary: { stages: [], totals: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, total_tokens: 0, cost: 0 } },
+    });
+    const lastNotify = ui.calls.notify[ui.calls.notify.length - 1];
+    expect(lastNotify[0]).toContain("LLM rate limited");
+  });
+
+  it("notifies on stage failure with tool details", () => {
+    panel.handleEvent(makeEvent("stage_started", { name: "selfci_check" }));
+    panel.handleEvent(makeEvent("stage_failed", {
+      name: "selfci_check",
+      error: "Tool failed",
+      tool_failure: {
+        command: "bash -lc 'selfci'",
+        exitCode: 1,
+        signal: null,
+        durationMs: 1234,
+        failureClass: "test_failure",
+        digest: "Tests: 1 failed",
+        stderrTail: "FAIL  smoke/selfci structured error\nTests: 1 failed, 0 passed",
+        stdoutTail: "selfci smoke run",
+        firstFailingCheck: "smoke/selfci structured error",
+        artifactPaths: { stdout: "/tmp/stdout.log", stderr: "/tmp/stderr.log", meta: "/tmp/meta.json" },
+      },
+    }));
+
+    // Should have emitted a notification with tool failure details
+    const failNotify = ui.calls.notify.find((c: any[]) => c[1] === "error" && c[0].includes("selfci_check"));
+    expect(failNotify).toBeDefined();
+    expect(failNotify![0]).toContain("bash -lc 'selfci'");
+    expect(failNotify![0]).toContain("Exit code: 1");
+    expect(failNotify![0]).toContain("FAIL  smoke/selfci structured error");
+    expect(failNotify![0]).toContain("First failing check: smoke/selfci structured error");
+  });
+
+  it("notifies on stage failure with plain error", () => {
+    panel.handleEvent(makeEvent("stage_started", { name: "plan" }));
+    panel.handleEvent(makeEvent("stage_failed", {
+      name: "plan",
+      error: "LLM timeout after 30s",
+    }));
+
+    const failNotify = ui.calls.notify.find((c: any[]) => c[1] === "error" && c[0].includes("plan"));
+    expect(failNotify).toBeDefined();
+    expect(failNotify![0]).toContain("LLM timeout after 30s");
+  });
+
+  it("notifies on pipeline_failed with error reason", () => {
+    panel.handleEvent(makeEvent("pipeline_started", {}));
+    panel.handleEvent(makeEvent("pipeline_failed", { error: "Stage failed with no outgoing edge: selfci_check" }));
+
+    const failNotify = ui.calls.notify.find((c: any[]) => c[1] === "error");
+    expect(failNotify).toBeDefined();
+    expect(failNotify![0]).toContain("Stage failed with no outgoing edge: selfci_check");
+  });
+
+  it("shows streaming LLM text in widget", () => {
+    panel.handleEvent(makeEvent("stage_started", { name: "plan" }));
+    panel.handleEvent(makeEvent("agent_text", { stageId: "plan", text: "Let me analyze " }));
+    panel.handleEvent(makeEvent("agent_text", { stageId: "plan", text: "the codebase..." }));
+
+    const lastWidget = ui.calls.setWidget[ui.calls.setWidget.length - 1];
+    expect(lastWidget[1]).toBeDefined();
+    // Widget should contain the streaming text preview
+    const widgetText = lastWidget[1].join("\n");
+    expect(widgetText).toContain("plan");
+    expect(widgetText).toContain("the codebase");
+  });
+
+  it("shows active tool calls in widget", () => {
+    panel.handleEvent(makeEvent("stage_started", { name: "implement" }));
+    panel.handleEvent(makeEvent("agent_tool_start", { stageId: "implement", toolName: "bash", toolCallId: "t1" }));
+
+    const lastWidget = ui.calls.setWidget[ui.calls.setWidget.length - 1];
+    const widgetText = lastWidget[1].join("\n");
+    expect(widgetText).toContain("bash");
+
+    // Status should show the tool
+    expect(ui.setStatus).toHaveBeenCalledWith("attractor", expect.stringContaining("bash"));
+  });
+
+  it("removes tool from active list on agent_tool_end", () => {
+    panel.handleEvent(makeEvent("stage_started", { name: "implement" }));
+    panel.handleEvent(makeEvent("agent_tool_start", { stageId: "implement", toolName: "bash", toolCallId: "t1" }));
+    panel.handleEvent(makeEvent("agent_tool_end", { stageId: "implement", toolName: "bash", toolCallId: "t1", isError: false }));
+
+    const lastWidget = ui.calls.setWidget[ui.calls.setWidget.length - 1];
+    const widgetText = lastWidget[1].join("\n");
+    // bash should no longer appear as active tool (only the stage line)
+    expect(widgetText).not.toContain("↳ bash");
+  });
+
+  it("disposes panel UI and clears widget on success", () => {
+    panel.handleEvent(makeEvent("pipeline_completed"));
     panel.dispose();
     expect(ui.setStatus).toHaveBeenCalledWith("attractor", undefined);
     expect(ui.setWidget).toHaveBeenCalledWith("attractor-progress", undefined);
+  });
+
+  it("keeps widget visible after failure on dispose", () => {
+    panel.handleEvent(makeEvent("stage_started", { name: "build" }));
+    panel.handleEvent(makeEvent("stage_failed", { name: "build", error: "oops" }));
+    panel.handleEvent(makeEvent("pipeline_failed", { error: "boom" }));
+
+    // Reset mock tracking to see what dispose does
+    (ui.setWidget as ReturnType<typeof vi.fn>).mockClear();
+    panel.dispose();
+
+    // Status is always cleared, but widget should NOT be cleared after failure
+    expect(ui.setStatus).toHaveBeenCalledWith("attractor", undefined);
+    expect(ui.setWidget).not.toHaveBeenCalled();
   });
 
   it("captures usage data", () => {
