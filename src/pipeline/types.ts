@@ -226,7 +226,8 @@ export type PipelineEventKind =
   | "checkpoint_saved"
   | "interview_started"
   | "interview_completed"
-  | "interview_timeout";
+  | "interview_timeout"
+  | "usage_update";
 
 export type PipelineEvent = {
   kind: PipelineEventKind;
@@ -295,3 +296,40 @@ export type BackendRunOptions = {
 export interface CodergenBackend {
   run(node: GraphNode, prompt: string, context: Context, options?: BackendRunOptions): Promise<string | Outcome>;
 }
+
+// ---------------------------------------------------------------------------
+// Usage metrics (Section 9.7 — CLI telemetry)
+// ---------------------------------------------------------------------------
+
+/** Token and cost metrics for a single stage attempt. */
+export type UsageMetrics = {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  total_tokens: number;
+  cost: number;
+};
+
+/** Usage for a single completed stage attempt. */
+export type StageAttemptUsage = {
+  stageId: string;
+  attempt: number;
+  metrics: UsageMetrics;
+};
+
+/** Aggregated usage summary for a pipeline run. */
+export type RunUsageSummary = {
+  /** Per-stage-attempt breakdown (all completed attempts in scope). */
+  stages: StageAttemptUsage[];
+  /** Aggregated totals across all attempts in this invocation. */
+  totals: UsageMetrics;
+};
+
+/** Streaming usage update event payload. */
+export type UsageUpdatePayload = {
+  stageId: string;
+  attempt: number;
+  /** Snapshot of current metrics for this stage attempt. */
+  metrics: UsageMetrics;
+};

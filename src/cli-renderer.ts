@@ -217,6 +217,7 @@ export function renderSummary(opts: {
   completedNodes: string[];
   logsRoot: string;
   elapsedMs: number;
+  usageSummary?: RunUsageSummary;
 }): string {
   const elapsed = formatDuration(opts.elapsedMs);
   const statusIcon = opts.status === "success"
@@ -227,13 +228,20 @@ export function renderSummary(opts: {
 
   const path = opts.completedNodes.join(` ${ANSI.dim}→${ANSI.reset} `);
 
-  return [
+  const lines = [
     "",
     `  Status: ${statusIcon}`,
     `  Time:   ${ANSI.dim}${elapsed}${ANSI.reset}`,
     `  Path:   ${path}`,
     `  Logs:   ${ANSI.dim}${opts.logsRoot}${ANSI.reset}`,
-  ].join("\n");
+  ];
+
+  // Always append usage section when available
+  if (opts.usageSummary) {
+    lines.push(renderUsageSummary(opts.usageSummary));
+  }
+
+  return lines.join("\n");
 }
 
 /**
@@ -280,6 +288,78 @@ export function renderFailureSummary(summary: {
   if (summary.logsPath) {
     lines.push(`  Logs:     ${ANSI.dim}${summary.logsPath}${ANSI.reset}`);
   }
+
+  return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Usage summary rendering
+// ---------------------------------------------------------------------------
+
+import type { RunUsageSummary, UsageMetrics } from "./pipeline/types.js";
+
+/**
+ * Format a cost value with adaptive precision.
+ * - >= $1.00 → 2 decimal places
+ * - >= $0.01 → 3 decimal places
+ * - >= $0.001 → 4 decimal places
+ * - < $0.001 → 6 decimal places
+ */
+export function formatCost(cost: number): string {
+  if (cost === 0) return "$0.00";
+  if (cost >= 1) return `$${cost.toFixed(2)}`;
+  if (cost >= 0.01) return `$${cost.toFixed(3)}`;
+  if (cost >= 0.001) return `$${cost.toFixed(4)}`;
+  return `$${cost.toFixed(6)}`;
+}
+
+/**
+ * Format a token count for display. Returns "—" for zero/missing.
+ */
+function formatTokens(count: number | undefined): string {
+  if (count == null || count === 0) return "—";
+  if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M`;
+  if (count >= 1_000) return `${(count / 1_000).toFixed(1)}k`;
+  return String(count);
+}
+
+/**
+ * Render the usage summary section. Always printed when usage data exists.
+ * Includes per-stage/attempt breakdown and totals row.
+ */
+export function renderUsageSummary(summary: RunUsageSummary): string {
+  const lines: string[] = [];
+
+  lines.push("");
+  lines.push(`  ${ANSI.bold}Usage${ANSI.reset}`);
+  lines.push(`  ${ANSI.dim}${"─".repeat(40)}${ANSI.reset}`);
+
+  // Column headers
+  const hdr = (s: string, w: number) => s.padEnd(w);
+  const rpad = (s: string, w: number) => s.padStart(w);
+
+  lines.push(
+    `  ${hdr("Stage", 22)} ${rpad("Input", 8)} ${rpad("Output", 8)} ${rpad("Cache R", 8)} ${rpad("Total", 8)} ${rpad("Cost", 10)}`,
+  );
+  lines.push(`  ${ANSI.dim}${"─".repeat(68)}${ANSI.reset}`);
+
+  // Per-stage rows
+  for (const s of summary.stages) {
+    const label = s.attempt > 1
+      ? `${s.stageId} #${s.attempt}`
+      : s.stageId;
+    const truncLabel = label.length > 21 ? label.slice(0, 20) + "…" : label;
+    lines.push(
+      `  ${ANSI.dim}${hdr(truncLabel, 22)} ${rpad(formatTokens(s.metrics.input_tokens), 8)} ${rpad(formatTokens(s.metrics.output_tokens), 8)} ${rpad(formatTokens(s.metrics.cache_read_tokens), 8)} ${rpad(formatTokens(s.metrics.total_tokens), 8)} ${rpad(formatCost(s.metrics.cost), 10)}${ANSI.reset}`,
+    );
+  }
+
+  // Totals row
+  lines.push(`  ${ANSI.dim}${"─".repeat(68)}${ANSI.reset}`);
+  const t = summary.totals;
+  lines.push(
+    `  ${ANSI.bold}${hdr("Total", 22)} ${rpad(formatTokens(t.input_tokens), 8)} ${rpad(formatTokens(t.output_tokens), 8)} ${rpad(formatTokens(t.cache_read_tokens), 8)} ${rpad(formatTokens(t.total_tokens), 8)} ${rpad(formatCost(t.cost), 10)}${ANSI.reset}`,
+  );
 
   return lines.join("\n");
 }

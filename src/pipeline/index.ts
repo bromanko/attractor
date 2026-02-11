@@ -11,6 +11,7 @@ export type {
   Diagnostic, Severity,
   Question, QuestionType, Option, Answer, AnswerValue, Interviewer,
   CodergenBackend, BackendRunOptions,
+  UsageMetrics, StageAttemptUsage, RunUsageSummary, UsageUpdatePayload,
 } from "./types.js";
 
 export { Context, SHAPE_TO_TYPE, KNOWN_HANDLER_TYPES } from "./types.js";
@@ -40,7 +41,7 @@ export type { JjRunner } from "./workspace.js";
 
 // Engine
 export { runPipeline } from "./engine.js";
-export type { PipelineConfig, PipelineResult, PipelineFailureSummary } from "./engine.js";
+export type { PipelineConfig, PipelineResult, PipelineFailureSummary  } from "./engine.js";
 
 // Interviewers
 export {

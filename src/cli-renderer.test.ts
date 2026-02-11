@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { renderBanner, renderSummary, renderResumeInfo, renderMarkdown, renderFailureSummary, formatDuration, Spinner } from "./cli-renderer.js";
+import { renderBanner, renderSummary, renderResumeInfo, renderMarkdown, renderFailureSummary, renderUsageSummary, formatCost, formatDuration, Spinner } from "./cli-renderer.js";
+import type { RunUsageSummary, UsageMetrics } from "./pipeline/types.js";
 
 // ---------------------------------------------------------------------------
 // renderBanner
@@ -313,5 +314,182 @@ describe("Spinner", () => {
     const allOutput = writeSpy.mock.calls.map((c) => String(c[0])).join("");
     // Should not have bracket model notation
     expect(allOutput).not.toMatch(/\[[a-z]+-[a-z0-9.-]+\]/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// formatCost
+// ---------------------------------------------------------------------------
+
+describe("formatCost", () => {
+  it("formats zero as $0.00", () => {
+    expect(formatCost(0)).toBe("$0.00");
+  });
+
+  it("formats large cost with 2 decimals", () => {
+    expect(formatCost(1.5)).toBe("$1.50");
+    expect(formatCost(12.345)).toBe("$12.35");
+  });
+
+  it("formats medium cost with 3 decimals", () => {
+    expect(formatCost(0.05)).toBe("$0.050");
+    expect(formatCost(0.0123)).toBe("$0.012");
+  });
+
+  it("formats small cost with 4 decimals", () => {
+    expect(formatCost(0.005)).toBe("$0.0050");
+    expect(formatCost(0.001)).toBe("$0.0010");
+  });
+
+  it("formats very small cost with 6 decimals", () => {
+    expect(formatCost(0.0001)).toBe("$0.000100");
+    expect(formatCost(0.000005)).toBe("$0.000005");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// renderUsageSummary
+// ---------------------------------------------------------------------------
+
+describe("renderUsageSummary", () => {
+  const fullMetrics: UsageMetrics = {
+    input_tokens: 1500,
+    output_tokens: 800,
+    cache_read_tokens: 500,
+    cache_write_tokens: 200,
+    total_tokens: 3000,
+    cost: 0.025,
+  };
+
+  it("renders full usage summary with stages and totals", () => {
+    const summary: RunUsageSummary = {
+      stages: [
+        { stageId: "plan", attempt: 1, metrics: { ...fullMetrics } },
+        { stageId: "implement", attempt: 1, metrics: { ...fullMetrics, cost: 0.05 } },
+      ],
+      totals: {
+        input_tokens: 3000,
+        output_tokens: 1600,
+        cache_read_tokens: 1000,
+        cache_write_tokens: 400,
+        total_tokens: 6000,
+        cost: 0.075,
+      },
+    };
+
+    const output = renderUsageSummary(summary);
+    expect(output).toContain("Usage");
+    expect(output).toContain("plan");
+    expect(output).toContain("implement");
+    expect(output).toContain("Total");
+    expect(output).toContain("$0.075");  // totals cost
+    expect(output).toContain("6.0k");    // total tokens in k format
+  });
+
+  it("shows attempt number for retries", () => {
+    const summary: RunUsageSummary = {
+      stages: [
+        { stageId: "build", attempt: 1, metrics: { ...fullMetrics } },
+        { stageId: "build", attempt: 2, metrics: { ...fullMetrics } },
+      ],
+      totals: {
+        input_tokens: 3000, output_tokens: 1600,
+        cache_read_tokens: 1000, cache_write_tokens: 400,
+        total_tokens: 6000, cost: 0.05,
+      },
+    };
+
+    const output = renderUsageSummary(summary);
+    expect(output).toContain("build #2");
+    // First attempt should not have #1 suffix
+    expect(output).toMatch(/build\s/);
+  });
+
+  it("shows dashes for zero token fields", () => {
+    const zeroMetrics: UsageMetrics = {
+      input_tokens: 100,
+      output_tokens: 50,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      total_tokens: 150,
+      cost: 0.001,
+    };
+
+    const summary: RunUsageSummary = {
+      stages: [{ stageId: "review", attempt: 1, metrics: zeroMetrics }],
+      totals: zeroMetrics,
+    };
+
+    const output = renderUsageSummary(summary);
+    expect(output).toContain("—");  // dash for zero cache tokens
+  });
+
+  it("truncates long stage names", () => {
+    const longName = "very_long_stage_name_that_exceeds_limit";
+    const summary: RunUsageSummary = {
+      stages: [{ stageId: longName, attempt: 1, metrics: fullMetrics }],
+      totals: fullMetrics,
+    };
+
+    const output = renderUsageSummary(summary);
+    expect(output).toContain("…");
+  });
+
+  it("formats large token counts with M suffix", () => {
+    const bigMetrics: UsageMetrics = {
+      input_tokens: 1_500_000,
+      output_tokens: 500_000,
+      cache_read_tokens: 200_000,
+      cache_write_tokens: 100_000,
+      total_tokens: 2_300_000,
+      cost: 5.0,
+    };
+
+    const summary: RunUsageSummary = {
+      stages: [{ stageId: "big", attempt: 1, metrics: bigMetrics }],
+      totals: bigMetrics,
+    };
+
+    const output = renderUsageSummary(summary);
+    expect(output).toContain("1.5M");
+    expect(output).toContain("2.3M");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// renderSummary with usage
+// ---------------------------------------------------------------------------
+
+describe("renderSummary with usage", () => {
+  it("includes usage section when usageSummary provided", () => {
+    const summary = renderSummary({
+      status: "success",
+      completedNodes: ["start", "work", "exit"],
+      logsRoot: "/tmp/logs",
+      elapsedMs: 5000,
+      usageSummary: {
+        stages: [{
+          stageId: "work",
+          attempt: 1,
+          metrics: { input_tokens: 100, output_tokens: 50, cache_read_tokens: 0, cache_write_tokens: 0, total_tokens: 150, cost: 0.001 },
+        }],
+        totals: { input_tokens: 100, output_tokens: 50, cache_read_tokens: 0, cache_write_tokens: 0, total_tokens: 150, cost: 0.001 },
+      },
+    });
+
+    expect(summary).toContain("Usage");
+    expect(summary).toContain("work");
+    expect(summary).toContain("Total");
+  });
+
+  it("omits usage section when no usageSummary", () => {
+    const summary = renderSummary({
+      status: "success",
+      completedNodes: ["start", "exit"],
+      logsRoot: "/tmp/logs",
+      elapsedMs: 1000,
+    });
+
+    expect(summary).not.toContain("Usage");
   });
 });

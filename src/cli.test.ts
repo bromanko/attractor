@@ -66,6 +66,8 @@ vi.mock("./cli-renderer.js", () => {
     renderResumeInfo: vi.fn(() => "RESUME"),
     renderMarkdown: vi.fn((s: string) => s),
     renderFailureSummary: vi.fn(() => "FAILURE_SUMMARY"),
+    renderUsageSummary: vi.fn(() => "USAGE_SUMMARY"),
+    formatCost: vi.fn((c: number) => `$${c}`),
     formatDuration: vi.fn(() => "1ms"),
     Spinner,
   };
@@ -376,5 +378,169 @@ describe("cmdRun cancellation", () => {
 
     const listenersAfter = process.listenerCount("SIGINT");
     expect(listenersAfter).toBe(listenersBefore);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Usage output tests
+// ---------------------------------------------------------------------------
+
+describe("cmdRun usage output", () => {
+  let tempDir: string;
+  let dotPath: string;
+  let logSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "attractor-cli-test-"));
+    dotPath = join(tempDir, "pipeline.dot");
+    await writeFile(dotPath, "digraph G {}", "utf-8");
+    currentEvents = [];
+    runPipelineImpl = undefined;
+    currentGraph = {
+      name: "test",
+      attrs: {},
+      nodes: [],
+      edges: [],
+    };
+    spinnerInstances.length = 0;
+    logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  });
+
+  afterEach(async () => {
+    logSpy.mockRestore();
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it("passes usageSummary from result to renderSummary", async () => {
+    const { renderSummary } = await import("./cli-renderer.js");
+
+    const usageSummary = {
+      stages: [{
+        stageId: "work",
+        attempt: 1,
+        metrics: {
+          input_tokens: 100, output_tokens: 50,
+          cache_read_tokens: 0, cache_write_tokens: 0,
+          total_tokens: 150, cost: 0.001,
+        },
+      }],
+      totals: {
+        input_tokens: 100, output_tokens: 50,
+        cache_read_tokens: 0, cache_write_tokens: 0,
+        total_tokens: 150, cost: 0.001,
+      },
+    };
+
+    runPipelineImpl = async () => ({
+      status: "success",
+      completedNodes: ["start", "work", "exit"],
+      usageSummary,
+    });
+
+    await cmdRun(dotPath, { "approve-all": true });
+
+    expect(renderSummary).toHaveBeenCalledWith(
+      expect.objectContaining({
+        usageSummary,
+      }),
+    );
+  });
+
+  it("captures live usage_update events", async () => {
+    const { renderSummary } = await import("./cli-renderer.js");
+
+    const liveUsage = {
+      stages: [{
+        stageId: "work",
+        attempt: 1,
+        metrics: {
+          input_tokens: 50, output_tokens: 25,
+          cache_read_tokens: 0, cache_write_tokens: 0,
+          total_tokens: 75, cost: 0.0005,
+        },
+      }],
+      totals: {
+        input_tokens: 50, output_tokens: 25,
+        cache_read_tokens: 0, cache_write_tokens: 0,
+        total_tokens: 75, cost: 0.0005,
+      },
+    };
+
+    runPipelineImpl = async (config: any) => {
+      // Emit a usage_update event (simulating live streaming)
+      config.onEvent?.({
+        kind: "usage_update",
+        timestamp: new Date().toISOString(),
+        data: {
+          stageId: "work",
+          attempt: 1,
+          metrics: liveUsage.stages[0].metrics,
+          summary: liveUsage,
+        },
+      });
+      // Return result WITHOUT usageSummary to test fallback to live data
+      return { status: "success", completedNodes: ["start", "work", "exit"] };
+    };
+
+    await cmdRun(dotPath, { "approve-all": true });
+
+    // Should fall back to live usage when result has no usageSummary
+    expect(renderSummary).toHaveBeenCalledWith(
+      expect.objectContaining({
+        usageSummary: liveUsage,
+      }),
+    );
+  });
+
+  it("result usageSummary takes priority over live updates", async () => {
+    const { renderSummary } = await import("./cli-renderer.js");
+
+    const resultUsage = {
+      stages: [{
+        stageId: "work",
+        attempt: 1,
+        metrics: {
+          input_tokens: 200, output_tokens: 100,
+          cache_read_tokens: 0, cache_write_tokens: 0,
+          total_tokens: 300, cost: 0.01,
+        },
+      }],
+      totals: {
+        input_tokens: 200, output_tokens: 100,
+        cache_read_tokens: 0, cache_write_tokens: 0,
+        total_tokens: 300, cost: 0.01,
+      },
+    };
+
+    runPipelineImpl = async (config: any) => {
+      // Emit a stale live usage event
+      config.onEvent?.({
+        kind: "usage_update",
+        timestamp: new Date().toISOString(),
+        data: {
+          stageId: "work",
+          attempt: 1,
+          metrics: { input_tokens: 10, output_tokens: 5, cache_read_tokens: 0, cache_write_tokens: 0, total_tokens: 15, cost: 0.0001 },
+          summary: {
+            stages: [{ stageId: "work", attempt: 1, metrics: { input_tokens: 10, output_tokens: 5, cache_read_tokens: 0, cache_write_tokens: 0, total_tokens: 15, cost: 0.0001 } }],
+            totals: { input_tokens: 10, output_tokens: 5, cache_read_tokens: 0, cache_write_tokens: 0, total_tokens: 15, cost: 0.0001 },
+          },
+        },
+      });
+      return {
+        status: "success",
+        completedNodes: ["start", "work", "exit"],
+        usageSummary: resultUsage,
+      };
+    };
+
+    await cmdRun(dotPath, { "approve-all": true });
+
+    // Result usageSummary should take priority
+    expect(renderSummary).toHaveBeenCalledWith(
+      expect.objectContaining({
+        usageSummary: resultUsage,
+      }),
+    );
   });
 });

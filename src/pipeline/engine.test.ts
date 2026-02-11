@@ -749,3 +749,315 @@ describe("Pipeline Cancellation", () => {
     expect(cleanupCalled).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Usage tracking tests
+// ---------------------------------------------------------------------------
+
+describe("Pipeline Usage Tracking", () => {
+  /** Backend that puts usage metrics into context_updates. */
+  function usageBackend(usageByNode: Record<string, { input: number; output: number; cost: number }>): CodergenBackend {
+    return {
+      async run(node) {
+        const u = usageByNode[node.id];
+        if (u) {
+          return {
+            status: "success",
+            context_updates: {
+              [`${node.id}.usage.input_tokens`]: u.input,
+              [`${node.id}.usage.output_tokens`]: u.output,
+              [`${node.id}.usage.total_tokens`]: u.input + u.output,
+              [`${node.id}.usage.cache_read_tokens`]: 0,
+              [`${node.id}.usage.cache_write_tokens`]: 0,
+              [`${node.id}.usage.cost`]: u.cost,
+            },
+          } as Outcome;
+        }
+        return `Done: ${node.id}`;
+      },
+    };
+  }
+
+  it("happy path: collects usage from multiple stages", async () => {
+    const graph = parseDot(`
+      digraph G {
+        graph [goal="Test usage"]
+        start [shape=Mdiamond]
+        exit [shape=Msquare]
+        plan [shape=box, prompt="Plan"]
+        impl [shape=box, prompt="Implement"]
+        start -> plan -> impl -> exit
+      }
+    `);
+
+    const logsRoot = await tempDir();
+    const result = await runPipeline({
+      graph,
+      logsRoot,
+      backend: usageBackend({
+        plan: { input: 100, output: 50, cost: 0.001 },
+        impl: { input: 200, output: 150, cost: 0.003 },
+      }),
+    });
+
+    expect(result.status).toBe("success");
+    expect(result.usageSummary).toBeDefined();
+    expect(result.usageSummary!.stages).toHaveLength(2);
+    expect(result.usageSummary!.stages[0].stageId).toBe("plan");
+    expect(result.usageSummary!.stages[1].stageId).toBe("impl");
+    expect(result.usageSummary!.totals.input_tokens).toBe(300);
+    expect(result.usageSummary!.totals.output_tokens).toBe(200);
+    expect(result.usageSummary!.totals.cost).toBeCloseTo(0.004);
+  });
+
+  it("retries: all attempts included in totals", async () => {
+    let callCount = 0;
+    const retryBackend: CodergenBackend = {
+      async run(node) {
+        if (node.id === "work") {
+          callCount++;
+          if (callCount === 1) {
+            return {
+              status: "fail",
+              failure_reason: "first try fail",
+              context_updates: {
+                [`${node.id}.usage.input_tokens`]: 50,
+                [`${node.id}.usage.output_tokens`]: 25,
+                [`${node.id}.usage.total_tokens`]: 75,
+                [`${node.id}.usage.cache_read_tokens`]: 0,
+                [`${node.id}.usage.cache_write_tokens`]: 0,
+                [`${node.id}.usage.cost`]: 0.001,
+              },
+            } as Outcome;
+          }
+          return {
+            status: "success",
+            context_updates: {
+              [`${node.id}.usage.input_tokens`]: 100,
+              [`${node.id}.usage.output_tokens`]: 80,
+              [`${node.id}.usage.total_tokens`]: 180,
+              [`${node.id}.usage.cache_read_tokens`]: 0,
+              [`${node.id}.usage.cache_write_tokens`]: 0,
+              [`${node.id}.usage.cost`]: 0.002,
+            },
+          } as Outcome;
+        }
+        return `Done: ${node.id}`;
+      },
+    };
+
+    const graph = parseDot(`
+      digraph G {
+        graph [goal="Test retries"]
+        start [shape=Mdiamond]
+        exit [shape=Msquare]
+        work [shape=box, prompt="Work", max_retries=2]
+        start -> work -> exit
+      }
+    `);
+
+    const logsRoot = await tempDir();
+    const result = await runPipeline({ graph, logsRoot, backend: retryBackend });
+
+    expect(result.status).toBe("success");
+    expect(result.usageSummary).toBeDefined();
+    // Both attempts should be in the breakdown
+    expect(result.usageSummary!.stages.length).toBeGreaterThanOrEqual(1);
+    // Totals should include cost from both attempts  
+    expect(result.usageSummary!.totals.cost).toBeGreaterThanOrEqual(0.002);
+  });
+
+  it("failed pipeline still returns usage summary", async () => {
+    const failBackend: CodergenBackend = {
+      async run(node) {
+        return {
+          status: "fail",
+          failure_reason: "boom",
+          context_updates: {
+            [`${node.id}.usage.input_tokens`]: 100,
+            [`${node.id}.usage.output_tokens`]: 50,
+            [`${node.id}.usage.total_tokens`]: 150,
+            [`${node.id}.usage.cache_read_tokens`]: 0,
+            [`${node.id}.usage.cache_write_tokens`]: 0,
+            [`${node.id}.usage.cost`]: 0.005,
+          },
+        } as Outcome;
+      },
+    };
+
+    const graph = parseDot(`
+      digraph G {
+        graph [goal="Test fail usage"]
+        start [shape=Mdiamond]
+        exit [shape=Msquare]
+        work [shape=box, prompt="Work"]
+        start -> work -> exit
+      }
+    `);
+
+    const logsRoot = await tempDir();
+    const result = await runPipeline({ graph, logsRoot, backend: failBackend });
+
+    expect(result.status).toBe("fail");
+    expect(result.usageSummary).toBeDefined();
+    expect(result.usageSummary!.totals.cost).toBe(0.005);
+  });
+
+  it("cancelled pipeline still returns usage summary", async () => {
+    const controller = new AbortController();
+
+    const abortBackend: CodergenBackend = {
+      async run(node) {
+        controller.abort();
+        return {
+          status: "success",
+          context_updates: {
+            [`${node.id}.usage.input_tokens`]: 200,
+            [`${node.id}.usage.output_tokens`]: 100,
+            [`${node.id}.usage.total_tokens`]: 300,
+            [`${node.id}.usage.cache_read_tokens`]: 0,
+            [`${node.id}.usage.cache_write_tokens`]: 0,
+            [`${node.id}.usage.cost`]: 0.01,
+          },
+        } as Outcome;
+      },
+    };
+
+    const graph = parseDot(`
+      digraph G {
+        graph [goal="Test cancel usage"]
+        start [shape=Mdiamond]
+        exit [shape=Msquare]
+        a [shape=box, prompt="A"]
+        b [shape=box, prompt="B"]
+        start -> a -> b -> exit
+      }
+    `);
+
+    const logsRoot = await tempDir();
+    const result = await runPipeline({
+      graph, logsRoot,
+      backend: abortBackend,
+      abortSignal: controller.signal,
+    });
+
+    expect(result.status).toBe("cancelled");
+    expect(result.usageSummary).toBeDefined();
+    expect(result.usageSummary!.totals.cost).toBe(0.01);
+  });
+
+  it("no usage: usageSummary is undefined", async () => {
+    const graph = parseDot(`
+      digraph G {
+        start [shape=Mdiamond]
+        exit [shape=Msquare]
+        start -> exit
+      }
+    `);
+
+    const logsRoot = await tempDir();
+    const result = await runPipeline({ graph, logsRoot, backend: successBackend });
+
+    expect(result.status).toBe("success");
+    expect(result.usageSummary).toBeUndefined();
+  });
+
+  it("emits usage_update events during execution", async () => {
+    const graph = parseDot(`
+      digraph G {
+        graph [goal="Test events"]
+        start [shape=Mdiamond]
+        exit [shape=Msquare]
+        work [shape=box, prompt="Work"]
+        start -> work -> exit
+      }
+    `);
+
+    const events: PipelineEvent[] = [];
+    const logsRoot = await tempDir();
+    await runPipeline({
+      graph,
+      logsRoot,
+      backend: usageBackend({ work: { input: 100, output: 50, cost: 0.001 } }),
+      onEvent: (e) => events.push(e),
+    });
+
+    const usageEvents = events.filter(e => e.kind === "usage_update");
+    expect(usageEvents.length).toBeGreaterThan(0);
+    expect(usageEvents[0].data.stageId).toBe("work");
+    expect(usageEvents[0].data.summary).toBeDefined();
+  });
+
+  it("ignores malformed/non-numeric usage values", async () => {
+    const badBackend: CodergenBackend = {
+      async run(node) {
+        return {
+          status: "success",
+          context_updates: {
+            [`${node.id}.usage.input_tokens`]: "not-a-number",
+            [`${node.id}.usage.output_tokens`]: null,
+            [`${node.id}.usage.total_tokens`]: undefined,
+            [`${node.id}.usage.cache_read_tokens`]: NaN,
+            [`${node.id}.usage.cache_write_tokens`]: Infinity,
+            [`${node.id}.usage.cost`]: 0.001,
+          },
+        } as Outcome;
+      },
+    };
+
+    const graph = parseDot(`
+      digraph G {
+        graph [goal="Test bad usage"]
+        start [shape=Mdiamond]
+        exit [shape=Msquare]
+        work [shape=box, prompt="Work"]
+        start -> work -> exit
+      }
+    `);
+
+    const logsRoot = await tempDir();
+    const result = await runPipeline({ graph, logsRoot, backend: badBackend });
+
+    expect(result.status).toBe("success");
+    expect(result.usageSummary).toBeDefined();
+    // Non-numeric values should be treated as 0
+    expect(result.usageSummary!.totals.input_tokens).toBe(0);
+    expect(result.usageSummary!.totals.output_tokens).toBe(0);
+    // NaN and Infinity should be treated as 0
+    expect(result.usageSummary!.totals.cache_read_tokens).toBe(0);
+    expect(result.usageSummary!.totals.cache_write_tokens).toBe(0);
+    // Valid cost should still be captured
+    expect(result.usageSummary!.totals.cost).toBe(0.001);
+  });
+
+  it("partial usage: only cost, no token counts", async () => {
+    const costOnlyBackend: CodergenBackend = {
+      async run(node) {
+        return {
+          status: "success",
+          context_updates: {
+            [`${node.id}.usage.cost`]: 0.05,
+          },
+        } as Outcome;
+      },
+    };
+
+    const graph = parseDot(`
+      digraph G {
+        graph [goal="Test partial usage"]
+        start [shape=Mdiamond]
+        exit [shape=Msquare]
+        work [shape=box, prompt="Work"]
+        start -> work -> exit
+      }
+    `);
+
+    const logsRoot = await tempDir();
+    const result = await runPipeline({ graph, logsRoot, backend: costOnlyBackend });
+
+    expect(result.status).toBe("success");
+    expect(result.usageSummary).toBeDefined();
+    expect(result.usageSummary!.totals.cost).toBe(0.05);
+    expect(result.usageSummary!.totals.input_tokens).toBe(0);
+  });
+});

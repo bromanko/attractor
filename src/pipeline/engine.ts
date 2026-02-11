@@ -10,6 +10,7 @@ import type {
   Graph, GraphNode, GraphEdge, Outcome, Context as ContextType,
   Checkpoint, PipelineEvent, PipelineEventKind,
   Interviewer, CodergenBackend,
+  UsageMetrics, StageAttemptUsage, RunUsageSummary, UsageUpdatePayload,
 } from "./types.js";
 import { Context, SHAPE_TO_TYPE } from "./types.js";
 import { HandlerRegistry } from "./handlers.js";
@@ -237,7 +238,61 @@ export type PipelineResult = {
   lastOutcome?: Outcome;
   /** Present when status is "fail" and a stage produced failure details. */
   failureSummary?: PipelineFailureSummary;
+  /** Usage summary for this invocation (always present when usage data exists). */
+  usageSummary?: RunUsageSummary;
 };
+
+// ---------------------------------------------------------------------------
+// Usage helpers
+// ---------------------------------------------------------------------------
+
+function emptyMetrics(): UsageMetrics {
+  return { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, total_tokens: 0, cost: 0 };
+}
+
+/** Safely parse a numeric usage value from context, returning 0 for invalid/missing. */
+function safeNum(val: unknown): number {
+  if (val == null) return 0;
+  const n = Number(val);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** Extract UsageMetrics from context for a given node ID. */
+function extractUsageFromContext(context: ContextType, nodeId: string): UsageMetrics {
+  return {
+    input_tokens: safeNum(context.get(`${nodeId}.usage.input_tokens`)),
+    output_tokens: safeNum(context.get(`${nodeId}.usage.output_tokens`)),
+    cache_read_tokens: safeNum(context.get(`${nodeId}.usage.cache_read_tokens`)),
+    cache_write_tokens: safeNum(context.get(`${nodeId}.usage.cache_write_tokens`)),
+    total_tokens: safeNum(context.get(`${nodeId}.usage.total_tokens`)),
+    cost: safeNum(context.get(`${nodeId}.usage.cost`)),
+  };
+}
+
+/** Add metrics b onto metrics a (mutates a). */
+function addMetrics(a: UsageMetrics, b: UsageMetrics): void {
+  a.input_tokens += b.input_tokens;
+  a.output_tokens += b.output_tokens;
+  a.cache_read_tokens += b.cache_read_tokens;
+  a.cache_write_tokens += b.cache_write_tokens;
+  a.total_tokens += b.total_tokens;
+  a.cost += b.cost;
+}
+
+/** Check if metrics has any non-zero value. */
+function hasUsage(m: UsageMetrics): boolean {
+  return m.input_tokens > 0 || m.output_tokens > 0 || m.total_tokens > 0 || m.cost > 0;
+}
+
+/** Build a RunUsageSummary from collected stage attempts. */
+function buildUsageSummary(attempts: StageAttemptUsage[]): RunUsageSummary | undefined {
+  if (attempts.length === 0) return undefined;
+  const totals = emptyMetrics();
+  for (const a of attempts) {
+    addMetrics(totals, a.metrics);
+  }
+  return { stages: [...attempts], totals };
+}
 
 function emit(config: PipelineConfig, kind: PipelineEventKind, data: Record<string, unknown> = {}): void {
   config.onEvent?.({
@@ -281,6 +336,7 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
   const completedNodes: string[] = [];
   const nodeOutcomes = new Map<string, Outcome>();
   const nodeRetries = new Map<string, number>();
+  const usageAttempts: StageAttemptUsage[] = [];
 
   // Resolve start node
   const startId = findStartNode(graph);
@@ -343,7 +399,7 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
         }
       } catch (err) {
         emit(config, "pipeline_failed", { error: `Failed to recover workspace "${wsName}": ${err}` });
-        return { status: "fail", completedNodes, lastOutcome: { status: "fail", failure_reason: String(err) } };
+        return { status: "fail", completedNodes, lastOutcome: { status: "fail", failure_reason: String(err) }, usageSummary: buildUsageSummary(usageAttempts) };
       }
     }
 
@@ -399,6 +455,7 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
     if (result.status === "fail" && shouldCleanupWorkspace) {
       await emergencyWorkspaceCleanup(context, config.jjRunner);
     }
+    result.usageSummary = buildUsageSummary(usageAttempts);
     return result;
   }
 
@@ -425,6 +482,7 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
       status: "cancelled",
       completedNodes,
       lastOutcome: { status: "cancelled", failure_reason: "Pipeline cancelled" },
+      usageSummary: buildUsageSummary(usageAttempts),
     };
   }
 
@@ -463,7 +521,7 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
       }
 
       emit(config, "pipeline_completed", { duration: 0 });
-      return { status: "success", completedNodes };
+      return { status: "success", completedNodes, usageSummary: buildUsageSummary(usageAttempts) };
     }
 
     // Execute node handler with retry
@@ -484,6 +542,20 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
           if (cr) return cr;
         }
         outcome = { status: "fail", failure_reason: String(err) };
+      }
+
+      // Apply context updates early so usage is captured before cancellation check
+      if (outcome.context_updates) {
+        context.applyUpdates(outcome.context_updates);
+      }
+
+      // Extract usage for this attempt
+      {
+        const attemptUsage = extractUsageFromContext(context, node.id);
+        if (hasUsage(attemptUsage)) {
+          const attemptIdx = (nodeRetries.get(node.id) ?? 0) + 1;
+          usageAttempts.push({ stageId: node.id, attempt: attemptIdx, metrics: attemptUsage });
+        }
       }
 
       // Check for cancellation after stage completion
@@ -544,13 +616,24 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
     completedNodes.push(node.id);
     nodeOutcomes.set(node.id, outcome);
 
-    // Apply context updates
-    if (outcome.context_updates) {
-      context.applyUpdates(outcome.context_updates);
-    }
+    // Context updates already applied in retry loop above
     context.set("outcome", outcome.status);
     if (outcome.preferred_label) {
       context.set("preferred_label", outcome.preferred_label);
+    }
+
+    // Emit usage_update event for any usage collected in this stage
+    // (usage was already extracted and accumulated in the retry loop above)
+    {
+      const lastUsage = usageAttempts.length > 0 ? usageAttempts[usageAttempts.length - 1] : undefined;
+      if (lastUsage && lastUsage.stageId === node.id) {
+        emit(config, "usage_update", {
+          stageId: lastUsage.stageId,
+          attempt: lastUsage.attempt,
+          metrics: lastUsage.metrics,
+          summary: buildUsageSummary(usageAttempts),
+        });
+      }
     }
 
     // Conditional (diamond) nodes are routing gates — they forward the upstream
@@ -665,5 +748,5 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
     : undefined;
 
   emit(config, "pipeline_completed", { duration: 0 });
-  return { status: "success", completedNodes, lastOutcome };
+  return { status: "success", completedNodes, lastOutcome, usageSummary: buildUsageSummary(usageAttempts) };
 }

@@ -25,9 +25,12 @@ import {
   renderResumeInfo,
   renderMarkdown,
   renderFailureSummary,
+  renderUsageSummary,
+  formatCost,
   Spinner,
   formatDuration,
 } from "./cli-renderer.js";
+import type { RunUsageSummary } from "./pipeline/index.js";
 
 const MARKDOWN_HINT_RE = /[#*`\[\]\n]/;
 
@@ -258,6 +261,7 @@ export async function cmdRun(
   const startTime = Date.now();
   const spinner = new Spinner();
   let spinnerStage: string | null = null;
+  let lastUsageSummary: RunUsageSummary | undefined;
 
   let result;
   try {
@@ -374,6 +378,13 @@ export async function cmdRun(
             }
             console.log(`\n  ⚠️  Pipeline cancelled`);
             break;
+          case "usage_update": {
+            const summary = d.summary as RunUsageSummary | undefined;
+            if (summary) {
+              lastUsageSummary = summary;
+            }
+            break;
+          }
         }
       }
     },
@@ -393,6 +404,7 @@ export async function cmdRun(
     completedNodes: result.completedNodes,
     logsRoot: resolve(logsRoot),
     elapsedMs: Date.now() - startTime,
+    usageSummary: result.usageSummary ?? lastUsageSummary,
   }));
 
   if (result.failureSummary) {
