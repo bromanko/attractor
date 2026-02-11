@@ -15,6 +15,8 @@ digraph ImplementPlan {
     // ── Implementation ─────────────────────────────────────────
     implement       [
         label="Implement",
+        llm_model="claude-opus-4-6",
+        llm_provider="anthropic",
         prompt="You are working on an existing TypeScript project.\n\
 Read the project structure, README, existing code, and tests to understand \
 the codebase thoroughly.\n\n\
@@ -35,8 +37,8 @@ Write all necessary code changes and tests.",
     // ── Code reviews (serial, skill-driven) ────────────────────
     review_code     [
         label="Review: code quality",
-        llm_model="gpt-5.3-codex",
-        llm_provider="openai-codex",
+        llm_model="claude-opus-4-6",
+        llm_provider="anthropic",
         prompt_file=".pi/skills/attractor-typescript-code-review/SKILL.md",
         prompt="Review the code changes made in this workspace.\n\
 Focus only on changed files for the goal: $goal\n\
@@ -46,8 +48,8 @@ Otherwise output [STATUS: success]."
 
     review_security [
         label="Review: security",
-        llm_model="gpt-5.3-codex",
-        llm_provider="openai-codex",
+        llm_model="claude-opus-4-6",
+        llm_provider="anthropic",
         prompt_file=".pi/skills/attractor-typescript-security-review/SKILL.md",
         prompt="Review the code changes made in this workspace for security concerns.\n\
 Focus only on changed files for the goal: $goal\n\
@@ -57,8 +59,8 @@ Otherwise output [STATUS: success]."
 
     review_perf     [
         label="Review: performance",
-        llm_model="gpt-5.3-codex",
-        llm_provider="openai-codex",
+        llm_model="claude-opus-4-6",
+        llm_provider="anthropic",
         prompt_file=".pi/skills/attractor-typescript-performance-review/SKILL.md",
         prompt="Review the code changes made in this workspace for performance.\n\
 Focus only on changed files for the goal: $goal\n\
@@ -68,8 +70,8 @@ Otherwise output [STATUS: success]."
 
     review_tests    [
         label="Review: tests",
-        llm_model="gpt-5.3-codex",
-        llm_provider="openai-codex",
+        llm_model="claude-opus-4-6",
+        llm_provider="anthropic",
         prompt_file=".pi/skills/attractor-typescript-test-review/SKILL.md",
         prompt="Review the test coverage for changes in this workspace.\n\
 Focus only on changed files for the goal: $goal\n\
@@ -83,6 +85,8 @@ Otherwise output [STATUS: success]."
     // ── Fix loop ───────────────────────────────────────────────
     fix             [
         label="Fix",
+        llm_model="claude-opus-4-6",
+        llm_provider="anthropic",
         prompt="The previous checks or reviews failed. Read the error output \
 and review findings from context. Fix the issues — only change what is needed \
 to make selfci pass and address review findings.\n\n\
@@ -109,6 +113,8 @@ Approve to merge, or send back for revision with feedback."
     // ── Revision from human feedback ───────────────────────────
     revise          [
         label="Revise implementation",
+        llm_model="claude-opus-4-6",
+        llm_provider="anthropic",
         prompt="The human reviewer has requested changes to the implementation.\n\n\
 Check the pipeline context for human.gate.feedback to understand what needs \
 to change. Address all feedback — make code changes and commit them.\n\n\
