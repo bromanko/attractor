@@ -946,7 +946,7 @@ describe("Pipeline Usage Tracking", () => {
     expect(result.usageSummary!.totals.cost).toBe(0.01);
   });
 
-  it("no usage: usageSummary is undefined", async () => {
+  it("no usage: usageSummary has empty stages and zero totals", async () => {
     const graph = parseDot(`
       digraph G {
         start [shape=Mdiamond]
@@ -959,7 +959,10 @@ describe("Pipeline Usage Tracking", () => {
     const result = await runPipeline({ graph, logsRoot, backend: successBackend });
 
     expect(result.status).toBe("success");
-    expect(result.usageSummary).toBeUndefined();
+    expect(result.usageSummary).toBeDefined();
+    expect(result.usageSummary.stages).toHaveLength(0);
+    expect(result.usageSummary.totals.cost).toBe(0);
+    expect(result.usageSummary.totals.input_tokens).toBe(0);
   });
 
   it("emits usage_update events during execution", async () => {

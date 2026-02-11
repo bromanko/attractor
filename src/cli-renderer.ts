@@ -236,9 +236,12 @@ export function renderSummary(opts: {
     `  Logs:   ${ANSI.dim}${opts.logsRoot}${ANSI.reset}`,
   ];
 
-  // Always append usage section when available
+  // Always append usage section
   if (opts.usageSummary) {
     lines.push(renderUsageSummary(opts.usageSummary));
+  } else {
+    // Render empty usage section for stable output
+    lines.push(renderUsageSummary({ stages: [], totals: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, total_tokens: 0, cost: 0 } }));
   }
 
   return lines.join("\n");

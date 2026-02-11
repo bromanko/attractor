@@ -482,7 +482,7 @@ describe("renderSummary with usage", () => {
     expect(summary).toContain("Total");
   });
 
-  it("omits usage section when no usageSummary", () => {
+  it("renders empty usage section when no usageSummary provided", () => {
     const summary = renderSummary({
       status: "success",
       completedNodes: ["start", "exit"],
@@ -490,6 +490,9 @@ describe("renderSummary with usage", () => {
       elapsedMs: 1000,
     });
 
-    expect(summary).not.toContain("Usage");
+    // Usage section is always present, even without explicit usageSummary
+    expect(summary).toContain("Usage");
+    expect(summary).toContain("Total");
+    expect(summary).toContain("$0.00");
   });
 });

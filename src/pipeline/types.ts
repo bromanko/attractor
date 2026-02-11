@@ -332,4 +332,6 @@ export type UsageUpdatePayload = {
   attempt: number;
   /** Snapshot of current metrics for this stage attempt. */
   metrics: UsageMetrics;
+  /** Running summary across all attempts so far. */
+  summary: RunUsageSummary;
 };

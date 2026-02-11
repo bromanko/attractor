@@ -238,8 +238,8 @@ export type PipelineResult = {
   lastOutcome?: Outcome;
   /** Present when status is "fail" and a stage produced failure details. */
   failureSummary?: PipelineFailureSummary;
-  /** Usage summary for this invocation (always present when usage data exists). */
-  usageSummary?: RunUsageSummary;
+  /** Usage summary for this invocation (always present). */
+  usageSummary: RunUsageSummary;
 };
 
 // ---------------------------------------------------------------------------
@@ -257,15 +257,19 @@ function safeNum(val: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-/** Extract UsageMetrics from context for a given node ID. */
-function extractUsageFromContext(context: ContextType, nodeId: string): UsageMetrics {
+/** Extract UsageMetrics from context_updates for a given node ID.
+ *  Uses the outcome's context_updates (not the shared context) so each
+ *  attempt only contributes its own values — avoids double-counting when
+ *  retries reuse the same context keys. */
+function extractUsageFromUpdates(updates: Record<string, unknown> | undefined, nodeId: string): UsageMetrics {
+  if (!updates) return emptyMetrics();
   return {
-    input_tokens: safeNum(context.get(`${nodeId}.usage.input_tokens`)),
-    output_tokens: safeNum(context.get(`${nodeId}.usage.output_tokens`)),
-    cache_read_tokens: safeNum(context.get(`${nodeId}.usage.cache_read_tokens`)),
-    cache_write_tokens: safeNum(context.get(`${nodeId}.usage.cache_write_tokens`)),
-    total_tokens: safeNum(context.get(`${nodeId}.usage.total_tokens`)),
-    cost: safeNum(context.get(`${nodeId}.usage.cost`)),
+    input_tokens: safeNum(updates[`${nodeId}.usage.input_tokens`]),
+    output_tokens: safeNum(updates[`${nodeId}.usage.output_tokens`]),
+    cache_read_tokens: safeNum(updates[`${nodeId}.usage.cache_read_tokens`]),
+    cache_write_tokens: safeNum(updates[`${nodeId}.usage.cache_write_tokens`]),
+    total_tokens: safeNum(updates[`${nodeId}.usage.total_tokens`]),
+    cost: safeNum(updates[`${nodeId}.usage.cost`]),
   };
 }
 
@@ -281,12 +285,12 @@ function addMetrics(a: UsageMetrics, b: UsageMetrics): void {
 
 /** Check if metrics has any non-zero value. */
 function hasUsage(m: UsageMetrics): boolean {
-  return m.input_tokens > 0 || m.output_tokens > 0 || m.total_tokens > 0 || m.cost > 0;
+  return m.input_tokens > 0 || m.output_tokens > 0 || m.cache_read_tokens > 0 || m.cache_write_tokens > 0 || m.total_tokens > 0 || m.cost > 0;
 }
 
-/** Build a RunUsageSummary from collected stage attempts. */
-function buildUsageSummary(attempts: StageAttemptUsage[]): RunUsageSummary | undefined {
-  if (attempts.length === 0) return undefined;
+/** Build a RunUsageSummary from collected stage attempts. Always returns a
+ *  summary (possibly with empty stages and zero totals) for stable rendering. */
+function buildUsageSummary(attempts: StageAttemptUsage[]): RunUsageSummary {
   const totals = emptyMetrics();
   for (const a of attempts) {
     addMetrics(totals, a.metrics);
@@ -451,12 +455,11 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
   }
 
   // Helper: clean up workspace on failure if one was created
-  async function cleanupOnFailure(result: PipelineResult): Promise<PipelineResult> {
+  async function cleanupOnFailure(result: Omit<PipelineResult, "usageSummary">): Promise<PipelineResult> {
     if (result.status === "fail" && shouldCleanupWorkspace) {
       await emergencyWorkspaceCleanup(context, config.jjRunner);
     }
-    result.usageSummary = buildUsageSummary(usageAttempts);
-    return result;
+    return { ...result, usageSummary: buildUsageSummary(usageAttempts) };
   }
 
   // Helper: check if cancelled and save checkpoint + emit event
@@ -549,9 +552,10 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
         context.applyUpdates(outcome.context_updates);
       }
 
-      // Extract usage for this attempt
+      // Extract usage for this attempt from the outcome's own context_updates
+      // (not the shared context) so retries don't double-count stale values.
       {
-        const attemptUsage = extractUsageFromContext(context, node.id);
+        const attemptUsage = extractUsageFromUpdates(outcome.context_updates, node.id);
         if (hasUsage(attemptUsage)) {
           const attemptIdx = (nodeRetries.get(node.id) ?? 0) + 1;
           usageAttempts.push({ stageId: node.id, attempt: attemptIdx, metrics: attemptUsage });
