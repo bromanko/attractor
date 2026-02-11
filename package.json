@@ -30,14 +30,22 @@
     "lint": "tsc --noEmit",
     "clean": "rm -rf dist"
   },
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./src/extensions/attractor.ts"]
+  },
   "license": "Apache-2.0",
   "dependencies": {
-    "@mariozechner/pi-ai": "0.52.6",
-    "@mariozechner/pi-coding-agent": "0.52.6",
     "marked": "^15.0.12",
     "marked-terminal": "^7.3.0"
   },
+  "peerDependencies": {
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-coding-agent": "*"
+  },
   "devDependencies": {
+    "@mariozechner/pi-ai": "0.52.6",
+    "@mariozechner/pi-coding-agent": "0.52.6",
     "@types/node": "^22.0.0",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"
