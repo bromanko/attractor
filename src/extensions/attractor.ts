@@ -33,13 +33,46 @@ import type {
 import { parseCommand, CommandParseError, usageText } from "./attractor-command.js";
 import type { ParsedRunCommand, ParsedValidateCommand } from "./attractor-command.js";
 import { PiInterviewer } from "./attractor-interviewer.js";
-import { AttractorPanel } from "./attractor-panel.js";
+import { AttractorPanel, CUSTOM_MESSAGE_TYPE } from "./attractor-panel.js";
+import type { StageMessageDetails } from "./attractor-panel.js";
+import { Box, Text } from "@mariozechner/pi-tui";
 
 // ---------------------------------------------------------------------------
 // Extension factory
 // ---------------------------------------------------------------------------
 
 export default function attractorExtension(pi: ExtensionAPI): void {
+  // Register message renderer for stage results in the conversation area
+  pi.registerMessageRenderer(CUSTOM_MESSAGE_TYPE, (message, { expanded }, theme) => {
+    const details = message.details as StageMessageDetails | undefined;
+    if (!details) {
+      const text = typeof message.content === "string" ? message.content : "";
+      return new Text(text, 0, 0);
+    }
+
+    const isSuccess = details.state === "success";
+    const bgColor = isSuccess ? "toolSuccessBg" : "toolErrorBg";
+    const icon = isSuccess ? theme.fg("success", "✔") : theme.fg("error", "✘");
+    const elapsed = details.elapsed ? theme.fg("dim", ` (${details.elapsed})`) : "";
+    const header = `${icon} ${theme.bold(details.stage)}${elapsed}`;
+
+    let body = "";
+    if (isSuccess && details.output) {
+      body = "\n" + details.output;
+    } else if (!isSuccess && details.error) {
+      body = "\n" + details.error;
+    }
+
+    // In collapsed mode, truncate body
+    if (!expanded && body.length > 300) {
+      body = body.slice(0, 300) + "…";
+    }
+
+    const box = new Box(1, 1, (t: string) => theme.bg(bgColor, t));
+    box.addChild(new Text(header + body, 0, 0));
+    return box;
+  });
+
   pi.registerCommand("attractor", {
     description: "Run or validate Attractor DOT pipelines",
 
@@ -182,8 +215,16 @@ async function handleRun(
   const logsRoot = cmd.logs ?? ".attractor/logs";
   const toolMode: ToolMode = (cmd.tools as ToolMode) ?? "coding";
 
-  // Set up panel early so backend can stream events to it
-  const panel = new AttractorPanel(ctx.ui, ctx.ui.theme);
+  // Set up panel early so backend can stream events to it.
+  // Wrap ctx.ui to add sendMessage (bridges to pi.sendMessage).
+  const panelUI = {
+    setStatus: (key: string, text: string | undefined) => ctx.ui.setStatus(key, text),
+    notify: (message: string, type?: "info" | "warning" | "error") => ctx.ui.notify(message, type),
+    sendMessage: (message: { customType: string; content: string; display: boolean; details: unknown }) => {
+      pi.sendMessage(message as Parameters<typeof pi.sendMessage>[0]);
+    },
+  };
+  const panel = new AttractorPanel(panelUI, ctx.ui.theme);
 
   // Build backend (reuses CLI model/provider defaults)
   let backend: CodergenBackend;

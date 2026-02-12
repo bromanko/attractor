@@ -6,11 +6,13 @@ function mockUI(): PanelUI & { calls: Record<string, any[]> } {
   const calls: Record<string, any[]> = {
     setStatus: [],
     notify: [],
+    sendMessage: [],
   };
   return {
     calls,
     setStatus: vi.fn((...args) => calls.setStatus.push(args)),
     notify: vi.fn((...args) => calls.notify.push(args)),
+    sendMessage: vi.fn((...args) => calls.sendMessage.push(args)),
   };
 }
 
@@ -128,58 +130,57 @@ describe("AttractorPanel", () => {
   // Stage completion notifications
   // -----------------------------------------------------------------------
 
-  it("notifies on stage completion with output", () => {
+  it("sends message on stage completion with output", () => {
     panel.handleEvent(makeEvent("stage_started", { name: "build" }));
     panel.handleEvent(makeEvent("stage_completed", {
       name: "build",
       output: "Compiled 42 files successfully.\nAll modules linked.",
     }));
 
-    const notifyCall = ui.calls.notify.find((c: any[]) => c[0].includes("build") && c[1] === "info");
-    expect(notifyCall).toBeDefined();
-    expect(notifyCall![0]).toContain("✔");
-    expect(notifyCall![0]).toContain("Compiled 42 files");
+    const msg = ui.calls.sendMessage.find((c: any[]) => c[0].details.stage === "build");
+    expect(msg).toBeDefined();
+    expect(msg![0].details.state).toBe("success");
+    expect(msg![0].details.output).toContain("Compiled 42 files");
   });
 
-  it("notifies on stage completion with notes when no output", () => {
+  it("sends message on stage completion with notes when no output", () => {
     panel.handleEvent(makeEvent("stage_started", { name: "ws_create" }));
     panel.handleEvent(makeEvent("stage_completed", {
       name: "ws_create",
       notes: "Workspace created at /tmp/ws",
     }));
 
-    const notifyCall = ui.calls.notify.find((c: any[]) => c[0].includes("ws_create"));
-    expect(notifyCall).toBeDefined();
-    expect(notifyCall![0]).toContain("Workspace created");
+    const msg = ui.calls.sendMessage.find((c: any[]) => c[0].details.stage === "ws_create");
+    expect(msg).toBeDefined();
+    expect(msg![0].details.output).toContain("Workspace created");
   });
 
-  it("truncates long output in completion notification", () => {
+  it("truncates long output in completion message", () => {
     const longOutput = "x".repeat(1000);
     panel.handleEvent(makeEvent("stage_started", { name: "verbose" }));
     panel.handleEvent(makeEvent("stage_completed", { name: "verbose", output: longOutput }));
 
-    const notifyCall = ui.calls.notify.find((c: any[]) => c[0].includes("verbose"));
-    expect(notifyCall).toBeDefined();
-    expect(notifyCall![0]).toContain("…");
-    expect(notifyCall![0].length).toBeLessThan(longOutput.length);
+    const msg = ui.calls.sendMessage.find((c: any[]) => c[0].details.stage === "verbose");
+    expect(msg).toBeDefined();
+    expect(msg![0].content).toContain("…");
+    expect(msg![0].content.length).toBeLessThan(longOutput.length);
   });
 
-  it("includes elapsed time in completion notification", () => {
+  it("includes elapsed time in completion message", () => {
     panel.handleEvent(makeEvent("stage_started", { name: "slow" }));
-    // Simulate time passing
     const entry = panel.stages[0] as any;
     entry.startedAt = Date.now() - 5000;
     panel.handleEvent(makeEvent("stage_completed", { name: "slow", output: "done" }));
 
-    const notifyCall = ui.calls.notify.find((c: any[]) => c[0].includes("slow"));
-    expect(notifyCall![0]).toMatch(/\d+s/);
+    const msg = ui.calls.sendMessage.find((c: any[]) => c[0].details.stage === "slow");
+    expect(msg![0].details.elapsed).toMatch(/\d+s/);
   });
 
   // -----------------------------------------------------------------------
   // Stage failure notifications
   // -----------------------------------------------------------------------
 
-  it("notifies on stage failure with tool details", () => {
+  it("sends message on stage failure with tool details", () => {
     panel.handleEvent(makeEvent("stage_started", { name: "selfci_check" }));
     panel.handleEvent(makeEvent("stage_failed", {
       name: "selfci_check",
@@ -198,24 +199,26 @@ describe("AttractorPanel", () => {
       },
     }));
 
-    const failNotify = ui.calls.notify.find((c: any[]) => c[1] === "error" && c[0].includes("selfci_check"));
-    expect(failNotify).toBeDefined();
-    expect(failNotify![0]).toContain("bash -lc 'selfci'");
-    expect(failNotify![0]).toContain("Exit code: 1");
-    expect(failNotify![0]).toContain("FAIL  smoke/selfci structured error");
-    expect(failNotify![0]).toContain("First failing check: smoke/selfci structured error");
+    const msg = ui.calls.sendMessage.find((c: any[]) => c[0].details.stage === "selfci_check");
+    expect(msg).toBeDefined();
+    expect(msg![0].details.state).toBe("fail");
+    expect(msg![0].content).toContain("bash -lc 'selfci'");
+    expect(msg![0].content).toContain("Exit code: 1");
+    expect(msg![0].content).toContain("FAIL  smoke/selfci structured error");
+    expect(msg![0].content).toContain("First failing check: smoke/selfci structured error");
   });
 
-  it("notifies on stage failure with plain error", () => {
+  it("sends message on stage failure with plain error", () => {
     panel.handleEvent(makeEvent("stage_started", { name: "plan" }));
     panel.handleEvent(makeEvent("stage_failed", {
       name: "plan",
       error: "LLM timeout after 30s",
     }));
 
-    const failNotify = ui.calls.notify.find((c: any[]) => c[1] === "error" && c[0].includes("plan"));
-    expect(failNotify).toBeDefined();
-    expect(failNotify![0]).toContain("LLM timeout after 30s");
+    const msg = ui.calls.sendMessage.find((c: any[]) => c[0].details.stage === "plan");
+    expect(msg).toBeDefined();
+    expect(msg![0].details.state).toBe("fail");
+    expect(msg![0].content).toContain("LLM timeout after 30s");
   });
 
   it("notifies on pipeline_failed with error reason", () => {

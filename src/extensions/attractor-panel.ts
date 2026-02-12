@@ -14,9 +14,28 @@ import type { RunUsageSummary } from "../pipeline/types.js";
 // Minimal UI surface (subset of ExtensionUIContext / ExtensionContext)
 // ---------------------------------------------------------------------------
 
+/** Message payload for rendering stage results in the conversation area. */
+export interface StageMessage {
+  customType: string;
+  content: string;
+  display: boolean;
+  details: StageMessageDetails;
+}
+
+export interface StageMessageDetails {
+  stage: string;
+  state: "success" | "fail";
+  elapsed?: string;
+  output?: string;
+  error?: string;
+  toolFailure?: Record<string, unknown>;
+}
+
 export interface PanelUI {
   setStatus(key: string, text: string | undefined): void;
   notify(message: string, type?: "info" | "warning" | "error"): void;
+  /** Send a styled message to the conversation area. */
+  sendMessage(message: { customType: string; content: string; display: boolean; details: StageMessageDetails }): void;
 }
 
 export interface PanelTheme {
@@ -46,6 +65,7 @@ interface StageEntry {
 const STATUS_KEY = "attractor";
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const LABEL = "attractor";
+export const CUSTOM_MESSAGE_TYPE = "attractor-stage";
 
 /** Max chars of output to include in a stage-completed notification. */
 const OUTPUT_PREVIEW_LIMIT = 500;
@@ -103,7 +123,7 @@ export class AttractorPanel {
           entry.state = "success";
           entry.completedAt = Date.now();
         }
-        this._notifyStageCompleted(name, d, entry);
+        this._sendStageCompleted(name, d, entry);
         break;
       }
 
@@ -115,7 +135,7 @@ export class AttractorPanel {
           entry.error = d.error ? String(d.error) : undefined;
           entry.completedAt = Date.now();
         }
-        this._notifyStageFailure(name, d, entry);
+        this._sendStageFailure(name, d, entry);
         break;
       }
 
@@ -286,79 +306,85 @@ export class AttractorPanel {
     return frame;
   }
 
-  /** Notify with stage completion details including output. */
-  private _notifyStageCompleted(
+  /** Send a stage completion message to the conversation area. */
+  private _sendStageCompleted(
     name: string,
     data: Record<string, unknown>,
     entry: StageEntry | undefined,
   ): void {
     const elapsed = entry?.completedAt && entry.startedAt
-      ? ` (${formatMs(entry.completedAt - entry.startedAt)})`
-      : "";
+      ? formatMs(entry.completedAt - entry.startedAt)
+      : undefined;
 
-    const lines: string[] = [
-      `${this._theme.fg("success", "✔")} ${this._theme.bold(name)}${elapsed}`,
-    ];
-
-    // Include output preview (tool stdout or LLM response)
     const output = typeof data.output === "string" ? data.output.trim() : "";
-    if (output) {
-      const preview = output.length > OUTPUT_PREVIEW_LIMIT
-        ? output.slice(0, OUTPUT_PREVIEW_LIMIT) + "…"
-        : output;
-      lines.push(preview);
-    } else if (data.notes) {
-      lines.push(String(data.notes));
-    }
+    const content = output
+      ? (output.length > OUTPUT_PREVIEW_LIMIT
+          ? output.slice(0, OUTPUT_PREVIEW_LIMIT) + "…"
+          : output)
+      : (data.notes ? String(data.notes) : "");
 
-    this._ui.notify(lines.join("\n"), "info");
+    this._ui.sendMessage({
+      customType: CUSTOM_MESSAGE_TYPE,
+      content,
+      display: true,
+      details: { stage: name, state: "success", elapsed, output: content },
+    });
   }
 
-  private _notifyStageFailure(
+  /** Send a stage failure message to the conversation area. */
+  private _sendStageFailure(
     name: string,
     data: Record<string, unknown>,
     entry: StageEntry | undefined,
   ): void {
     const elapsed = entry?.completedAt && entry.startedAt
-      ? ` (${formatMs(entry.completedAt - entry.startedAt)})`
-      : "";
-
-    const lines: string[] = [
-      `${this._theme.fg("error", "✘")} ${this._theme.bold(name)}${elapsed}`,
-    ];
+      ? formatMs(entry.completedAt - entry.startedAt)
+      : undefined;
 
     const tf = data.tool_failure as Record<string, unknown> | undefined;
+    const errorLines: string[] = [];
+
     if (tf) {
-      // Rich tool failure details
-      if (tf.command) lines.push(`Command: ${tf.command}`);
-      if (tf.exitCode != null) lines.push(`Exit code: ${tf.exitCode}`);
-      if (tf.signal) lines.push(`Signal: ${tf.signal}`);
-      if (tf.durationMs != null) lines.push(`Duration: ${formatMs(tf.durationMs as number)}`);
-      if (tf.firstFailingCheck) lines.push(`First failing check: ${tf.firstFailingCheck}`);
+      if (tf.command) errorLines.push(`Command: ${tf.command}`);
+      if (tf.exitCode != null) errorLines.push(`Exit code: ${tf.exitCode}`);
+      if (tf.signal) errorLines.push(`Signal: ${tf.signal}`);
+      if (tf.durationMs != null) errorLines.push(`Duration: ${formatMs(tf.durationMs as number)}`);
+      if (tf.firstFailingCheck) errorLines.push(`First failing check: ${tf.firstFailingCheck}`);
 
       const stderrTail = tf.stderrTail as string | undefined;
       if (stderrTail && stderrTail.trim()) {
-        lines.push("");
-        lines.push("stderr:");
-        lines.push(stderrTail.trim());
+        errorLines.push("");
+        errorLines.push("stderr:");
+        errorLines.push(stderrTail.trim());
       }
 
       const stdoutTail = tf.stdoutTail as string | undefined;
       if (stdoutTail && stdoutTail.trim() && !stderrTail?.trim()) {
-        lines.push("");
-        lines.push("stdout:");
-        lines.push(stdoutTail.trim());
+        errorLines.push("");
+        errorLines.push("stdout:");
+        errorLines.push(stdoutTail.trim());
+      }
+
+      if (tf.artifactPaths) {
+        const paths = tf.artifactPaths as Record<string, string>;
+        if (paths.stderr) errorLines.push(`\nFull logs: ${paths.stderr}`);
       }
     } else if (data.error) {
-      lines.push(String(data.error));
+      errorLines.push(String(data.error));
     }
 
-    if (tf?.artifactPaths) {
-      const paths = tf.artifactPaths as Record<string, string>;
-      if (paths.stderr) lines.push(`\nFull logs: ${paths.stderr}`);
-    }
-
-    this._ui.notify(lines.join("\n"), "error");
+    this._ui.sendMessage({
+      customType: CUSTOM_MESSAGE_TYPE,
+      content: errorLines.join("\n"),
+      display: true,
+      details: {
+        stage: name,
+        state: "fail",
+        elapsed,
+        error: errorLines.join("\n"),
+        toolFailure: tf,
+      },
+    });
   }
 
   private _findStage(name: string): StageEntry | undefined {
