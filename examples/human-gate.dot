@@ -1,0 +1,50 @@
+// Pipeline that exercises human input gates.
+// Runs a tool stage, asks the human a question, then branches based on answer.
+digraph HumanGate {
+  graph [goal="Test human gate interaction in the attractor panel"]
+
+  start [shape=Mdiamond, label="Start"]
+  exit  [shape=Msquare,  label="Exit"]
+
+  gather_info [
+    shape=parallelogram,
+    label="Gather info",
+    tool_command="bash -lc 'echo \"System: $(uname -s)\"; echo \"User: $(whoami)\"; echo \"Dir: $(pwd)\"; echo \"Files: $(ls | wc -l) items\"'"
+  ]
+
+  human_gate [
+    shape=hexagon,
+    label="How should we proceed?",
+    prompt="Review the gathered info. Choose what to do next."
+  ]
+
+  run_tests [
+    shape=parallelogram,
+    label="Run tests",
+    tool_command="bash -lc 'echo \"Running quick test suite...\"; sleep 1; echo \"All 3 checks passed\"'"
+  ]
+
+  show_details [
+    shape=parallelogram,
+    label="Show details",
+    tool_command="bash -lc 'echo \"=== Detailed System Info ===\"; echo \"Hostname: $(hostname)\"; echo \"Shell: $SHELL\"; echo \"Node: $(node --version 2>/dev/null || echo N/A)\"; echo \"Uptime: $(uptime)\"'"
+  ]
+
+  confirm_done [
+    shape=hexagon,
+    label="Done?",
+    prompt="Everything look good?"
+  ]
+
+  start -> gather_info -> human_gate
+
+  human_gate -> run_tests    [label="[T] Run tests"]
+  human_gate -> show_details [label="[D] Show details"]
+  human_gate -> exit         [label="[Q] Quit"]
+
+  run_tests    -> confirm_done
+  show_details -> confirm_done
+
+  confirm_done -> exit       [label="[Y] Yes, finish"]
+  confirm_done -> human_gate [label="[N] No, go back"]
+}
