@@ -407,11 +407,11 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
       }
     }
 
-    emit(config, "pipeline_resumed", { from: currentNode.id });
+    emit(config, "pipeline_resumed", { from: currentNode.id, nodeCount: graph.nodes.length });
   }
 
   await mkdir(logsRoot, { recursive: true });
-  emit(config, "pipeline_started", { name: graph.name });
+  emit(config, "pipeline_started", { name: graph.name, nodeCount: graph.nodes.length });
 
   const shouldCleanupWorkspace = config.cleanupWorkspaceOnFailure !== false;
 
@@ -651,6 +651,19 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
         index: completedNodes.length - 1,
       };
       if (outcome.notes) completedData.notes = outcome.notes;
+      // Include stage output for rendering: tool stdout or LLM response
+      if (outcome.context_updates) {
+        const toolOutput = outcome.context_updates["tool.output"];
+        if (typeof toolOutput === "string" && toolOutput.trim()) {
+          completedData.output = toolOutput;
+        } else {
+          // LLM stages store response under ${nodeId}.response
+          const llmResponse = outcome.context_updates[`${node.id}.response`];
+          if (typeof llmResponse === "string" && llmResponse.trim()) {
+            completedData.output = llmResponse;
+          }
+        }
+      }
       emit(config, "stage_completed", completedData);
     } else {
       const stageFailedData: Record<string, unknown> = {
