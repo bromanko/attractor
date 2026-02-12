@@ -5,11 +5,21 @@ import { mkdtemp, readFile, access } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { runPipeline } from "./engine.js";
 import { parseDot } from "./dot-parser.js";
-import type { CodergenBackend, Outcome, PipelineEvent } from "./types.js";
+import type { CodergenBackend, Outcome, PipelineEvent, Interviewer, Question, Answer, Option } from "./types.js";
 import { Context } from "./types.js";
 
 async function tempDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "attractor-test-"));
+}
+
+/** Find a question option by label pattern, failing with a clear message if missing. */
+function findOption(options: Option[], pattern: RegExp): Option {
+  const match = options.find((o) => pattern.test(o.label));
+  if (!match) {
+    const available = options.map((o) => o.label).join(", ");
+    throw new Error(`Expected an option matching ${pattern} but found: [${available}]`);
+  }
+  return match;
 }
 
 /** Simple backend that always succeeds. */
@@ -518,6 +528,247 @@ describe("Pipeline Engine", () => {
     expect(result.completedNodes).toContain("gate");
     expect(result.completedNodes).toContain("revise");
     expect(result.completedNodes).not.toContain("good");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Re-review after revision tests
+// ---------------------------------------------------------------------------
+
+describe("Human gate re-review after revision", () => {
+  /** Decision sequence for the gate interviewer: pick options by label pattern in order. */
+  type GateDecision = { pattern: RegExp };
+
+  type ReReviewTestResult = {
+    result: Awaited<ReturnType<typeof runPipeline>>;
+    humanGateCallCount: number;
+    executedNodes: string[];
+  };
+
+  /**
+   * Shared harness for re-review tests.
+   *
+   * Runs a pipeline with a tracking backend and a gate interviewer that picks
+   * options from `gateDecisions` in sequence (freeform questions always get
+   * an automatic text reply).
+   */
+  async function runReReviewTest(
+    dot: string,
+    gateDecisions: GateDecision[],
+  ): Promise<ReReviewTestResult> {
+    const graph = parseDot(dot);
+    let humanGateCallCount = 0;
+    const executedNodes: string[] = [];
+
+    const backend: CodergenBackend = {
+      async run(node) {
+        executedNodes.push(node.id);
+        return `Done: ${node.id}`;
+      },
+    };
+
+    const interviewer: Interviewer = {
+      async ask(question: Question): Promise<Answer> {
+        if (question.type === "freeform") {
+          return { value: "Feedback.", text: "Feedback." };
+        }
+        const decision = gateDecisions[humanGateCallCount] ?? gateDecisions[gateDecisions.length - 1]!;
+        humanGateCallCount++;
+        const selected = findOption(question.options, decision.pattern);
+        return { value: selected.key, selected_option: selected };
+      },
+    };
+
+    const logsRoot = await tempDir();
+    const result = await runPipeline({ graph, logsRoot, backend, interviewer });
+
+    return { result, humanGateCallCount, executedNodes };
+  }
+
+  it("redirects to human gate when revision bypasses the gate", async () => {
+    // Revision goes directly to the approve target (ws_merge), skipping the
+    // human gate. The engine should intercept and redirect.
+    const { result, humanGateCallCount, executedNodes } = await runReReviewTest(
+      `digraph G {
+        graph [goal="Test re-review"]
+        start [shape=Mdiamond]
+        exit  [shape=Msquare]
+        impl  [shape=box, prompt="Implement"]
+        human_review [shape=hexagon, prompt="Review the work"]
+        revise [shape=box, prompt="Revise"]
+        ws_merge [shape=box, prompt="Merge"]
+
+        start -> impl -> human_review
+        human_review -> ws_merge [label="Approve"]
+        human_review -> revise   [label="Revise"]
+        revise -> ws_merge
+        ws_merge -> exit
+      }`,
+      [{ pattern: /revise/i }, { pattern: /approve/i }],
+    );
+
+    expect(result.status).toBe("success");
+    expect(humanGateCallCount).toBe(2);
+    expect(executedNodes).toContain("revise");
+    expect(executedNodes).toContain("ws_merge");
+  });
+
+  it("does not redirect when re_review=false on the human gate", async () => {
+    const { result, humanGateCallCount, executedNodes } = await runReReviewTest(
+      `digraph G {
+        graph [goal="Test no re-review"]
+        start [shape=Mdiamond]
+        exit  [shape=Msquare]
+        impl  [shape=box, prompt="Implement"]
+        human_review [shape=hexagon, prompt="Review", re_review=false]
+        revise [shape=box, prompt="Revise"]
+        ws_merge [shape=box, prompt="Merge"]
+
+        start -> impl -> human_review
+        human_review -> ws_merge [label="Approve"]
+        human_review -> revise   [label="Revise"]
+        revise -> ws_merge
+        ws_merge -> exit
+      }`,
+      [{ pattern: /revise/i }],
+    );
+
+    expect(result.status).toBe("success");
+    // Human gate should only be visited once — no re-review redirect
+    expect(humanGateCallCount).toBe(1);
+    // revise ran and ws_merge was reached directly (no redirection)
+    expect(executedNodes).toContain("revise");
+    expect(executedNodes).toContain("ws_merge");
+  });
+
+  it("re-review works when the revision goes through intermediate nodes", async () => {
+    // human_review -> revise -> selfci -> ws_merge
+    // selfci is intermediate; ws_merge is the approve target.
+    const { result, humanGateCallCount, executedNodes } = await runReReviewTest(
+      `digraph G {
+        graph [goal="Test re-review with intermediates"]
+        start [shape=Mdiamond]
+        exit  [shape=Msquare]
+        impl  [shape=box, prompt="Implement"]
+        human_review [shape=hexagon, prompt="Review the work"]
+        revise [shape=box, prompt="Revise"]
+        selfci [shape=parallelogram, tool_command="echo ok"]
+        ws_merge [shape=box, prompt="Merge"]
+
+        start -> impl -> human_review
+        human_review -> ws_merge [label="Approve"]
+        human_review -> revise   [label="Revise"]
+        revise -> selfci
+        selfci -> ws_merge
+        ws_merge -> exit
+      }`,
+      [{ pattern: /revise/i }, { pattern: /approve/i }],
+    );
+
+    expect(result.status).toBe("success");
+    expect(humanGateCallCount).toBe(2);
+    expect(executedNodes).toContain("revise");
+    expect(result.completedNodes.filter(n => n === "human_review").length).toBe(2);
+  });
+
+  it("correctly-wired loop still works with re-review enabled", async () => {
+    // Revision already loops back through the human gate.
+    // Re-review should not interfere.
+    const { result, humanGateCallCount } = await runReReviewTest(
+      `digraph G {
+        graph [goal="Test well-wired loop"]
+        start [shape=Mdiamond]
+        exit  [shape=Msquare]
+        impl  [shape=box, prompt="Implement"]
+        human_review [shape=hexagon, prompt="Review"]
+        revise [shape=box, prompt="Revise"]
+        ws_merge [shape=box, prompt="Merge"]
+
+        start -> impl -> human_review
+        human_review -> ws_merge [label="Approve"]
+        human_review -> revise   [label="Revise"]
+        revise -> human_review
+        ws_merge -> exit
+      }`,
+      [{ pattern: /revise/i }, { pattern: /approve/i }],
+    );
+
+    expect(result.status).toBe("success");
+    // Still visited twice — the natural loop and re-review don't conflict
+    expect(humanGateCallCount).toBe(2);
+  });
+
+  it("multiple human gates track re-review state independently", async () => {
+    // Two sequential human gates (review_a, review_b). Reviewer chooses
+    // Revise at gate A, then the revision path passes through gate B
+    // (which approves). The engine must still enforce re-review for gate A
+    // even though gate B has already run.
+    const graph = parseDot(`
+      digraph G {
+        graph [goal="Test multi-gate re-review"]
+        start [shape=Mdiamond]
+        exit  [shape=Msquare]
+        impl     [shape=box, prompt="Implement"]
+        review_a [shape=hexagon, prompt="Review A"]
+        review_b [shape=hexagon, prompt="Review B"]
+        revise   [shape=box, prompt="Revise"]
+        deploy   [shape=box, prompt="Deploy"]
+
+        start -> impl -> review_a
+        review_a -> review_b [label="Approve"]
+        review_a -> revise   [label="Revise"]
+        revise -> review_b
+        review_b -> deploy [label="Approve"]
+        deploy -> exit
+      }
+    `);
+
+    const gateCalls: Record<string, number> = {};
+    const executedNodes: string[] = [];
+
+    const backend: CodergenBackend = {
+      async run(node) {
+        executedNodes.push(node.id);
+        return `Done: ${node.id}`;
+      },
+    };
+
+    const interviewer: Interviewer = {
+      async ask(question: Question): Promise<Answer> {
+        if (question.type === "freeform") {
+          return { value: "Feedback.", text: "Feedback." };
+        }
+        // Determine which gate is asking by the prompt text
+        const stage = question.stage;
+        gateCalls[stage] = (gateCalls[stage] ?? 0) + 1;
+
+        if (stage === "review_a") {
+          if (gateCalls[stage] === 1) {
+            // First visit to A: Revise
+            const revise = findOption(question.options, /revise/i);
+            return { value: revise.key, selected_option: revise };
+          }
+          // Re-review at A: Approve
+          const approve = findOption(question.options, /approve/i);
+          return { value: approve.key, selected_option: approve };
+        }
+        // Gate B: always Approve
+        const approve = findOption(question.options, /approve/i);
+        return { value: approve.key, selected_option: approve };
+      },
+    };
+
+    const logsRoot = await tempDir();
+    const result = await runPipeline({ graph, logsRoot, backend, interviewer });
+
+    expect(result.status).toBe("success");
+    // Gate A should have been visited twice (initial Revise + re-review Approve)
+    expect(gateCalls["review_a"]).toBe(2);
+    // Gate B should only be visited once — the first attempt to reach it
+    // (after revise) was intercepted by review_a's re-review redirect.
+    expect(gateCalls["review_b"]).toBe(1);
+    expect(executedNodes).toContain("revise");
+    expect(executedNodes).toContain("deploy");
   });
 });
 

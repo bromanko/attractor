@@ -6,8 +6,10 @@ import { writeFile, mkdir } from "node:fs/promises";
 import { join, dirname, resolve, isAbsolute, normalize, relative, sep } from "node:path";
 import {
   SHAPE_TO_TYPE,
+  HUMAN_GATE_KEYS,
   type Handler, type GraphNode, type Context, type Graph, type Outcome,
   type Interviewer, type CodergenBackend, type Option, type Question,
+  type PendingReReviews,
 } from "./types.js";
 import {
   WorkspaceCreateHandler,
@@ -305,9 +307,9 @@ export class WaitForHumanHandler implements Handler {
     const selected = answer.selected_option ?? options.find((o) => o.key === answer.value) ?? options[0];
     const targetEdge = edges.find((e) => (e.attrs.label || e.to) === selected.label);
 
-    const shouldAskFeedback = /revise/i.test(selected.label);
+    const choseRevise = /revise/i.test(selected.label);
     let feedback: string | undefined;
-    if (shouldAskFeedback) {
+    if (choseRevise) {
       try {
         const feedbackAnswer = await this._interviewer.ask({
           text: "What should be revised in the plan?",
@@ -322,14 +324,42 @@ export class WaitForHumanHandler implements Handler {
       }
     }
 
+    // Re-review enforcement: when re_review is enabled (default for human
+    // gates) and the human chose "Revise", record the approve targets so
+    // the engine can redirect back to this gate if the revised work tries
+    // to reach an approve target without passing through the gate again.
+    // Build the updated re-review map.  Start from whatever is already in
+    // context so that other gates' entries are preserved.
+    const reReviewEnabled = node.attrs.re_review !== false && node.attrs.re_review !== "false";
+    const existingReReviews = context.get(HUMAN_GATE_KEYS.PENDING_RE_REVIEWS);
+    const pendingReReviews: PendingReReviews = (
+      existingReReviews != null && typeof existingReReviews === "object" && !Array.isArray(existingReReviews)
+        ? { ...(existingReReviews as PendingReReviews) }
+        : {}
+    );
+
+    // Always clear this gate's entry — the human is making a fresh decision.
+    delete pendingReReviews[node.id];
+
+    if (choseRevise && reReviewEnabled && targetEdge) {
+      // The "approve" targets are all edge targets *other than* the revise
+      // target. These are the nodes that should not be reached without
+      // re-visiting this gate.
+      const approveTargets = edges
+        .filter((e) => e.to !== targetEdge.to)
+        .map((e) => e.to);
+      pendingReReviews[node.id] = approveTargets;
+    }
+
     return {
       status: "success",
       suggested_next_ids: targetEdge ? [targetEdge.to] : [edges[0].to],
       context_updates: {
-        "human.gate.selected": selected.key,
-        "human.gate.label": selected.label,
-        ...(feedback != null ? { "human.gate.feedback": feedback } : {}),
-        ...(draftPath ? { "human.gate.draft_path": draftPath } : {}),
+        [HUMAN_GATE_KEYS.SELECTED]: selected.key,
+        [HUMAN_GATE_KEYS.LABEL]: selected.label,
+        ...(feedback != null ? { [HUMAN_GATE_KEYS.FEEDBACK]: feedback } : {}),
+        ...(draftPath ? { [HUMAN_GATE_KEYS.DRAFT_PATH]: draftPath } : {}),
+        [HUMAN_GATE_KEYS.PENDING_RE_REVIEWS]: pendingReReviews,
       },
       notes: draftPath ? `Draft saved at ${draftPath}` : undefined,
     };

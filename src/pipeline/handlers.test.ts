@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ToolHandler, WaitForHumanHandler } from "./handlers.js";
-import { Context } from "./types.js";
+import { Context, HUMAN_GATE_KEYS } from "./types.js";
 import type { Graph, GraphNode, Interviewer, Question, Answer } from "./types.js";
 
 function makeGraph(overrides: Partial<Graph> = {}): Graph {
@@ -193,7 +193,7 @@ describe("WaitForHumanHandler", () => {
     const outcome = await handler.execute(makeHumanNode(), context, graph, ".");
     expect(outcome.status).toBe("success");
     expect(outcome.suggested_next_ids).toEqual(["plan_revise"]);
-    expect(outcome.context_updates?.["human.gate.feedback"]).toBe("Need tighter scope.");
+    expect(outcome.context_updates?.[HUMAN_GATE_KEYS.FEEDBACK]).toBe("Need tighter scope.");
   });
 
   it("writes draft plan file when configured", async () => {
@@ -227,11 +227,121 @@ describe("WaitForHumanHandler", () => {
     });
 
     const outcome = await handler.execute(node, context, graph, ".");
-    const draftPath = String(outcome.context_updates?.["human.gate.draft_path"] ?? "");
+    const draftPath = String(outcome.context_updates?.[HUMAN_GATE_KEYS.DRAFT_PATH] ?? "");
     expect(draftPath).toContain("docs/plans/my-test-goal.draft.md");
 
     const content = await readFile(draftPath, "utf-8");
     expect(content).toContain("Plan body");
+  });
+
+  it("sets re-review context when Revise is selected (default re_review=true)", async () => {
+    const interviewer: Interviewer = {
+      async ask(question: Question): Promise<Answer> {
+        if (question.type === "multiple_choice") {
+          const revise = question.options.find((o) => /revise/i.test(o.label));
+          if (!revise) throw new Error("Expected a Revise option");
+          return { value: revise.key, selected_option: revise };
+        }
+        return { value: "Fix the scope.", text: "Fix the scope." };
+      },
+    };
+
+    const handler = new WaitForHumanHandler(interviewer);
+    const context = new Context();
+    const graph = makeGraph({
+      edges: [
+        { from: "human_review", to: "write_plan", attrs: { label: "Accept" } },
+        { from: "human_review", to: "plan_revise", attrs: { label: "Revise" } },
+      ],
+    });
+
+    const outcome = await handler.execute(makeHumanNode(), context, graph, ".");
+    const pendingReReviews = outcome.context_updates?.[HUMAN_GATE_KEYS.PENDING_RE_REVIEWS] as Record<string, string[]>;
+    expect(pendingReReviews).toBeDefined();
+    expect(pendingReReviews["human_review"]).toEqual(["write_plan"]);
+  });
+
+  it("clears re-review context when Accept is selected", async () => {
+    const interviewer: Interviewer = {
+      async ask(question: Question): Promise<Answer> {
+        const accept = question.options.find((o) => /accept/i.test(o.label));
+        if (!accept) throw new Error("Expected an Accept option");
+        return { value: accept.key, selected_option: accept };
+      },
+    };
+
+    const handler = new WaitForHumanHandler(interviewer);
+    const context = new Context();
+    // Pre-populate with pending re-review state to prove Accept clears it.
+    context.set(HUMAN_GATE_KEYS.PENDING_RE_REVIEWS, {
+      human_review: ["write_plan"],
+    });
+    const graph = makeGraph({
+      edges: [
+        { from: "human_review", to: "write_plan", attrs: { label: "Accept" } },
+        { from: "human_review", to: "plan_revise", attrs: { label: "Revise" } },
+      ],
+    });
+
+    const outcome = await handler.execute(makeHumanNode(), context, graph, ".");
+    const pendingReReviews = outcome.context_updates?.[HUMAN_GATE_KEYS.PENDING_RE_REVIEWS] as Record<string, string[]>;
+    expect(pendingReReviews).toBeDefined();
+    expect(pendingReReviews["human_review"]).toBeUndefined();
+  });
+
+  it("does not set re-review context when re_review=false", async () => {
+    const interviewer: Interviewer = {
+      async ask(question: Question): Promise<Answer> {
+        if (question.type === "multiple_choice") {
+          const revise = question.options.find((o) => /revise/i.test(o.label));
+          if (!revise) throw new Error("Expected a Revise option");
+          return { value: revise.key, selected_option: revise };
+        }
+        return { value: "Fix it.", text: "Fix it." };
+      },
+    };
+
+    const handler = new WaitForHumanHandler(interviewer);
+    const context = new Context();
+    const graph = makeGraph({
+      edges: [
+        { from: "human_review", to: "write_plan", attrs: { label: "Accept" } },
+        { from: "human_review", to: "plan_revise", attrs: { label: "Revise" } },
+      ],
+    });
+
+    const outcome = await handler.execute(makeHumanNode({ re_review: false }), context, graph, ".");
+    const pendingReReviews = outcome.context_updates?.[HUMAN_GATE_KEYS.PENDING_RE_REVIEWS] as Record<string, string[]>;
+    expect(pendingReReviews).toBeDefined();
+    expect(pendingReReviews["human_review"]).toBeUndefined();
+  });
+
+  it("does not set re-review context when re_review=\"false\" (string from quoted DOT attr)", async () => {
+    const interviewer: Interviewer = {
+      async ask(question: Question): Promise<Answer> {
+        if (question.type === "multiple_choice") {
+          const revise = question.options.find((o) => /revise/i.test(o.label));
+          if (!revise) throw new Error("Expected a Revise option");
+          return { value: revise.key, selected_option: revise };
+        }
+        return { value: "Fix it.", text: "Fix it." };
+      },
+    };
+
+    const handler = new WaitForHumanHandler(interviewer);
+    const context = new Context();
+    const graph = makeGraph({
+      edges: [
+        { from: "human_review", to: "write_plan", attrs: { label: "Accept" } },
+        { from: "human_review", to: "plan_revise", attrs: { label: "Revise" } },
+      ],
+    });
+
+    // String "false" can arrive from quoted DOT attributes: re_review="false"
+    const outcome = await handler.execute(makeHumanNode({ re_review: "false" }), context, graph, ".");
+    const pendingReReviews = outcome.context_updates?.[HUMAN_GATE_KEYS.PENDING_RE_REVIEWS] as Record<string, string[]>;
+    expect(pendingReReviews).toBeDefined();
+    expect(pendingReReviews["human_review"]).toBeUndefined();
   });
 
   it("omits details_markdown when review_markdown_keys is invalid/empty and no defaults exist", async () => {
@@ -290,7 +400,7 @@ describe("WaitForHumanHandler", () => {
       ".",
     );
 
-    expect(outcome.context_updates?.["human.gate.draft_path"]).toBeUndefined();
+    expect(outcome.context_updates?.[HUMAN_GATE_KEYS.DRAFT_PATH]).toBeUndefined();
 
     const defaultDraftDir = join(repoRoot, "docs", "plans");
     await expect(access(defaultDraftDir)).rejects.toBeDefined();
@@ -317,7 +427,7 @@ describe("WaitForHumanHandler", () => {
     });
 
     const outcome = await handler.execute(makeHumanNode(), context, graph, ".");
-    const draftPath = String(outcome.context_updates?.["human.gate.draft_path"] ?? "");
+    const draftPath = String(outcome.context_updates?.[HUMAN_GATE_KEYS.DRAFT_PATH] ?? "");
     expect(draftPath).toContain(join("docs", "plans", "plan.draft.md"));
 
     const content = await readFile(draftPath, "utf-8");

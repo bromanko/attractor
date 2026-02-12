@@ -12,7 +12,7 @@ import type {
   Interviewer, CodergenBackend,
   UsageMetrics, StageAttemptUsage, RunUsageSummary, UsageUpdatePayload,
 } from "./types.js";
-import { Context, SHAPE_TO_TYPE } from "./types.js";
+import { Context, SHAPE_TO_TYPE, HUMAN_GATE_KEYS } from "./types.js";
 import { HandlerRegistry } from "./handlers.js";
 import { evaluateCondition } from "./conditions.js";
 import { findStartNode, findExitNodes, validateOrRaise } from "./validator.js";
@@ -752,10 +752,27 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
       // Restart would create a fresh run — for now just continue to target
     }
 
+    // Re-review enforcement: if any human gate requested re-review (the
+    // reviewer chose "Revise"), intercept attempts to reach that gate's
+    // approve targets and redirect back to the gate instead.
+    let effectiveNextId = nextEdge.to;
+    const pendingRaw = context.get(HUMAN_GATE_KEYS.PENDING_RE_REVIEWS);
+    if (pendingRaw != null && typeof pendingRaw === "object" && !Array.isArray(pendingRaw)) {
+      const pending = pendingRaw as Record<string, unknown>;
+      for (const [gateId, targets] of Object.entries(pending)) {
+        if (Array.isArray(targets) && targets.includes(nextEdge.to)) {
+          // The pipeline is about to reach an approve target without
+          // passing through this human gate. Redirect for re-review.
+          effectiveNextId = gateId;
+          break;
+        }
+      }
+    }
+
     // Advance
-    const nextNode = graph.nodes.find((n) => n.id === nextEdge.to);
+    const nextNode = graph.nodes.find((n) => n.id === effectiveNextId);
     if (!nextNode) {
-      emit(config, "pipeline_failed", { error: `Edge target "${nextEdge.to}" not found` });
+      emit(config, "pipeline_failed", { error: `Edge target "${effectiveNextId}" not found` });
       return cleanupOnFailure({
         status: "fail", completedNodes, lastOutcome: outcome,
         failureSummary: buildFailureSummary(node.id, outcome),

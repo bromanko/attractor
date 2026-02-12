@@ -39,7 +39,7 @@
 ## Trust & Signal Integrity
 
 - [ ] **Prevent LLM self-assessment in fix/implement stages** — LLM stages that make code changes should not self-report success via `[STATUS: success]`. Their output claims ("all tests pass", "addresses all findings") are unreliable. Only verification stages (selfci, reviews) should produce status signals. Consider: (a) stripping `[STATUS:]` markers from non-review nodes, (b) adding a node attribute like `ignore_status_markers=true`, or (c) always treating implement/fix nodes as `success` regardless of markers.
-- [ ] **Human review gate re-review after revision** — When an implement/fix stage has a human review gate and the reviewer requests revisions, the pipeline should loop back to the human review after the revision is applied rather than auto-merging. The reviewer must be able to inspect the revised output before it proceeds. This avoids silently accepting changes that may not address the reviewer's concerns.
+- [x] **Human review gate re-review after revision** — When an implement/fix stage has a human review gate and the reviewer requests revisions, the pipeline should loop back to the human review after the revision is applied rather than auto-merging. The reviewer must be able to inspect the revised output before it proceeds. This avoids silently accepting changes that may not address the reviewer's concerns.
 - [ ] **Review findings accumulation** — When multiple reviews run in sequence and some fail, the `fix` node needs all findings aggregated, not just the last one. Consider a `findings` context key that accumulates across review stages, or have the gate node summarize all review outcomes before routing to fix.
 
 ## PiBackend

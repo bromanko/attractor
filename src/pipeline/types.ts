@@ -25,6 +25,16 @@ export type NodeAttrs = {
   reasoning_effort?: string;
   auto_status?: boolean;
   allow_partial?: boolean;
+  /**
+   * When true (the default for human gates), selecting a "Revise"-style option
+   * records the gate's approve targets so the engine can redirect back to
+   * this gate if the revised work tries to reach an approve target without
+   * passing through the gate again.
+   *
+   * Accepts `boolean` or the string `"false"` / `"true"` (which DOT parsers
+   * emit for quoted attribute values).
+   */
+  re_review?: boolean | string;
   [key: string]: unknown;
 };
 
@@ -168,6 +178,13 @@ export class Context {
     return String(value);
   }
 
+  /** Retrieve a value expected to be a `string[]`, returning `defaultVal` if absent or mistyped. */
+  getStringArray(key: string, defaultVal: string[] = []): string[] {
+    const value = this.get(key);
+    if (!Array.isArray(value)) return defaultVal;
+    return value.filter((v): v is string => typeof v === "string");
+  }
+
   appendLog(entry: string): void {
     this._logs.push(entry);
   }
@@ -286,6 +303,39 @@ export type Answer = {
 export interface Interviewer {
   ask(question: Question): Promise<Answer>;
 }
+
+// ---------------------------------------------------------------------------
+// Human-gate context keys
+// ---------------------------------------------------------------------------
+
+/** Well-known context keys written by the human-gate handler and read by the engine. */
+export const HUMAN_GATE_KEYS = {
+  /** The option key chosen by the human reviewer. */
+  SELECTED: "human.gate.selected",
+  /** The label of the chosen option. */
+  LABEL: "human.gate.label",
+  /** Free-form feedback text supplied during review. */
+  FEEDBACK: "human.gate.feedback",
+  /** Path to the draft file shown during review. */
+  DRAFT_PATH: "human.gate.draft_path",
+  /**
+   * Map of gate-scoped pending re-reviews.
+   *
+   * Value is a `PendingReReviews` record: gate node ID → approve-target
+   * node IDs.  Each entry means "the reviewer chose Revise at this gate;
+   * redirect back here if execution tries to reach one of these targets."
+   *
+   * The handler adds/removes its own entry; the engine checks all entries.
+   */
+  PENDING_RE_REVIEWS: "human.gate.pending_re_reviews",
+} as const;
+
+/**
+ * Per-gate re-review state stored under `HUMAN_GATE_KEYS.PENDING_RE_REVIEWS`.
+ * Keys are human-gate node IDs; values are the approve-target node IDs that
+ * should trigger a redirect back to that gate.
+ */
+export type PendingReReviews = Record<string, string[]>;
 
 // ---------------------------------------------------------------------------
 // CodergenBackend (Section 4.5)
