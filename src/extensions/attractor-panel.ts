@@ -58,6 +58,9 @@ export class AttractorPanel {
   private _lastUsage: RunUsageSummary | undefined;
   private _spinnerIndex = 0;
   private _totalNodes = 0;
+  private _spinnerTimer: ReturnType<typeof setInterval> | undefined;
+  private _lastStatusDetail = "";
+  private _lastStatusColor = "warning";
 
   constructor(ui: PanelUI, theme: PanelTheme) {
     this._ui = ui;
@@ -89,6 +92,7 @@ export class AttractorPanel {
         const name = String(d.name);
         this._stages.push({ name, state: "running", startedAt: Date.now() });
         this._status(this._spin(), name, "warning");
+        this._startSpinner();
         break;
       }
 
@@ -125,11 +129,13 @@ export class AttractorPanel {
 
       case "pipeline_completed":
         this._pipelineRunning = false;
+        this._stopSpinner();
         this._status("✔", "completed", "success");
         break;
 
       case "pipeline_failed": {
         this._pipelineRunning = false;
+        this._stopSpinner();
         this._status("✘", "failed", "error");
         if (d.error) {
           this._ui.notify(
@@ -142,6 +148,7 @@ export class AttractorPanel {
 
       case "pipeline_cancelled":
         this._pipelineRunning = false;
+        this._stopSpinner();
         this._status("⊘", "cancelled", "warning");
         break;
 
@@ -213,6 +220,7 @@ export class AttractorPanel {
 
   /** Tear down panel UI elements. */
   dispose(): void {
+    this._stopSpinner();
     this._ui.setStatus(STATUS_KEY, undefined);
   }
 
@@ -234,10 +242,32 @@ export class AttractorPanel {
 
   /** Format a status string with the attractor label, spinner/icon, and detail. */
   private _status(icon: string, detail: string, color: string): void {
+    this._lastStatusDetail = detail;
+    this._lastStatusColor = color;
     const prefix = this._theme.fg("dim", `${LABEL} `);
     const progress = this._progressTag();
     const body = this._theme.fg(color, `${icon} ${detail}`);
     this._ui.setStatus(STATUS_KEY, `${prefix}${progress}${body}`);
+  }
+
+  /** Start the spinner interval timer. Re-renders status every 80ms. */
+  private _startSpinner(): void {
+    if (this._spinnerTimer) return;
+    this._spinnerTimer = setInterval(() => {
+      if (!this._pipelineRunning) {
+        this._stopSpinner();
+        return;
+      }
+      this._status(this._spin(), this._lastStatusDetail, this._lastStatusColor);
+    }, 80);
+  }
+
+  /** Stop the spinner interval timer. */
+  private _stopSpinner(): void {
+    if (this._spinnerTimer) {
+      clearInterval(this._spinnerTimer);
+      this._spinnerTimer = undefined;
+    }
   }
 
   /** Return a "[2/5] " progress tag or "" if we don't know the total. */
