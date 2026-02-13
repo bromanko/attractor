@@ -1056,4 +1056,46 @@ describe("AWF2 expression routing", () => {
     expect(result.completedNodes).toContain("fix");
     expect(result.completedNodes).not.toContain("ship");
   });
+
+  it("routes to exit when build succeeds (complementary success path)", async () => {
+    const graph = await loadAwf2Workflow("awf2-fail-no-route.awf.kdl");
+    const logs = await tempDir();
+
+    const backend = nodeOutcomeBackend({
+      build: { status: "success" },
+    });
+
+    const result = await runPipeline({ graph, logsRoot: logs, backend });
+
+    expect(result.status).toBe("success");
+    expect(result.completedNodes).toEqual(["__start__", "build", "exit"]);
+  });
+
+  it("fails pipeline when a failed stage has no matching failure transition", async () => {
+    const graph = await loadAwf2Workflow("awf2-fail-no-route.awf.kdl");
+    const logs = await tempDir();
+    const { events, onEvent } = eventCollector();
+
+    const backend = nodeOutcomeBackend({
+      build: { status: "fail", failure_reason: "build failed" },
+    });
+
+    const result = await runPipeline({ graph, logsRoot: logs, backend, onEvent });
+
+    expect(result.status).toBe("fail");
+    expect(result.completedNodes).toEqual(["__start__", "build"]);
+    expect(events.map((e) => e.kind)).toContain("pipeline_failed");
+    const failEvent = events.find((e) => e.kind === "pipeline_failed")!;
+    expect(failEvent.data.error).toMatch(
+      /no outgoing edge.*build/i,
+    );
+    expect(result.failureSummary?.failedNode).toBe("build");
+    expect(result.failureSummary?.failureReason).toBe("build failed");
+    expect(result.lastOutcome?.failure_reason).toBe("build failed");
+    // Engine must not have started the "exit" stage at all.
+    const startedStages = events
+      .filter((e) => e.kind === "stage_started")
+      .map((e) => e.data.name);
+    expect(startedStages).not.toContain("exit");
+  });
 });
