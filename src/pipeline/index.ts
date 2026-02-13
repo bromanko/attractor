@@ -79,6 +79,8 @@ export { parseWorkflowDefinition, workflowToGraph, parseWorkflowToGraph } from "
 // DOT serialization
 export { graphToDot } from "./graph-to-dot.js";
 
+export { hasGraphEasy, runGraphEasy } from "./graph-easy.js";
+
 // Pi SDK Backend
 export { PiBackend } from "../pi-backend.js";
 export type { PiBackendConfig } from "../pi-backend.js";
