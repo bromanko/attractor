@@ -23,7 +23,7 @@ export type NodeAttrs = {
   llm_model?: string;
   llm_provider?: string;
   reasoning_effort?: string;
-  auto_status?: boolean;
+  auto_status?: boolean | "true" | "false";
   allow_partial?: boolean;
   /**
    * When true (the default for human gates), selecting a "Revise"-style option

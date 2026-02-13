@@ -28,6 +28,7 @@ import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 
 import type { CodergenBackend, GraphNode, Outcome, BackendRunOptions } from "./pipeline/types.js";
 import { Context } from "./pipeline/types.js";
+import { shouldParseStatusMarkers } from "./pipeline/status-markers.js";
 
 // ---------------------------------------------------------------------------
 // Valid thinking levels
@@ -128,11 +129,11 @@ export function defaultParseOutcome(
     },
   };
 
-  // Status marker
+  // Status marker — only honoured when the node opts in (see shouldParseStatusMarkers).
   const statusMatch = text.match(
     /\[STATUS:\s*(success|fail|partial_success|retry)\]/i,
   );
-  if (statusMatch) {
+  if (statusMatch && shouldParseStatusMarkers(node)) {
     outcome.status = statusMatch[1].toLowerCase() as Outcome["status"];
   }
 
@@ -148,12 +149,14 @@ export function defaultParseOutcome(
     outcome.suggested_next_ids = nextMatches.map((m) => m[1]);
   }
 
-  // Failure reason
-  const failMatch = text.match(/\[FAILURE_REASON:\s*(.+?)\]/i);
-  if (failMatch) {
-    outcome.failure_reason = failMatch[1].trim();
-  } else if (outcome.status === "fail") {
-    outcome.failure_reason = text.slice(0, 200);
+  // Failure reason — only parsed when status markers are honoured.
+  if (shouldParseStatusMarkers(node)) {
+    const failMatch = text.match(/\[FAILURE_REASON:\s*(.+?)\]/i);
+    if (failMatch) {
+      outcome.failure_reason = failMatch[1].trim();
+    } else if (outcome.status === "fail") {
+      outcome.failure_reason = text.slice(0, 200);
+    }
   }
 
   return outcome;
