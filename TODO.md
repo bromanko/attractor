@@ -11,12 +11,6 @@
 
 - [x] **Remove model from startup banner** — The banner displays a single model, but individual stages can override with `llm_model`/`llm_provider`. Either remove the model line or label it "Default model" to avoid confusion.
 - [x] **Progress indication for long-running stages** — After `stage_started`, there's no visual feedback until the stage completes. Add a spinner, elapsed timer, or periodic dot/tick output so the user can tell the process isn't frozen.
-- [ ] **Running workflow visibility (tmux-based observability)** — Design a way to inspect live workflow execution in real time using `tmux`.
-  - [ ] Define UX: `attractor run ... --tmux` or `attractor watch <run-id>` that opens/attaches to a session.
-  - [ ] Decide pane layout (e.g. stage timeline, latest logs/events, checkpoint/context summary, selfci output).
-  - [ ] Stream structured stage events to pane(s) without breaking non-interactive mode.
-  - [ ] Handle reconnect/attach for long-running or detached workflows.
-  - [ ] Add graceful fallback when `tmux` is unavailable (plain terminal output unchanged).
 - [x] **Fix banner border alignment** — The box-drawing characters in the startup banner are misaligned (content width doesn't match border width). Use consistent column widths for `┌`, `│`, and `└` lines.
 - [x] **Show per-stage model** — When a stage uses a non-default model, display it alongside the stage name in the output (e.g., `▶️  plan_review [gpt-5.3-codex]`).
 - [x] **Render markdown in terminal output** — LLM responses displayed at human gates and in failure messages are raw markdown. Use `marked` + `marked-terminal` to render headings, lists, code blocks, and emphasis with ANSI formatting for readable terminal output.
@@ -42,12 +36,7 @@
 - [x] **Human review gate re-review after revision** — When an implement/fix stage has a human review gate and the reviewer requests revisions, the pipeline should loop back to the human review after the revision is applied rather than auto-merging. The reviewer must be able to inspect the revised output before it proceeds. This avoids silently accepting changes that may not address the reviewer's concerns.
 - [ ] **Review findings accumulation** — When multiple reviews run in sequence and some fail, the `fix` node needs all findings aggregated, not just the last one. Consider a `findings` context key that accumulates across review stages, or have the gate node summarize all review outcomes before routing to fix.
 
-## PiBackend
-
-- [ ] **Opt-in extension/skill loading** — Add config options to `PiBackendConfig` to selectively enable pi extensions, skills, or AGENTS.md discovery for pipeline runs that want it.
-- [ ] **Cancellation support** — Wire an `AbortSignal` through `PiBackend.run()` for graceful cancellation of long-running agent sessions.
-- [ ] **Event-driven streaming output** — Extend `onStageEvent` to provide structured progress (token counts, tool calls) for real-time UI updates.
-
 ## Done
 
+- [x] **Cancellation support** — Wire an `AbortSignal` through `PiBackend.run()` for graceful cancellation of long-running agent sessions.
 - [x] **Replace custom LLM/Agent layers with pi SDK** — Deleted `src/llm/` and `src/agent/`, replaced `LlmBackend` with `PiBackend` backed by `@mariozechner/pi-coding-agent`. All LLM providers now come from pi's model registry.
