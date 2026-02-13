@@ -154,57 +154,150 @@ function createTestBackend(
 // ---------------------------------------------------------------------------
 
 describe("defaultParseOutcome", () => {
-  const node = makeNode();
+  // Default makeNode() is shape=box (codergen) — status markers are ignored.
+  const codergenNode = makeNode();
+  // Review node opts in to status marker parsing.
+  const reviewNode = makeNode({ id: "review", attrs: { label: "Review", auto_status: true } });
   const ctx = new Context();
 
   it("defaults to success when no markers present", () => {
-    const outcome = defaultParseOutcome("Here is the implementation.", node, ctx);
+    const outcome = defaultParseOutcome("Here is the implementation.", codergenNode, ctx);
     expect(outcome.status).toBe("success");
     expect(outcome.notes).toContain("Here is the implementation.");
     expect(outcome.context_updates!["implement.response"]).toContain("Here is the implementation.");
   });
 
-  it("parses [STATUS: fail] marker", () => {
+  // --- auto_status=true nodes honour status markers ---
+
+  it("parses [STATUS: fail] marker for auto_status=true node", () => {
     const outcome = defaultParseOutcome(
       "Could not complete.\n[STATUS: fail]\n[FAILURE_REASON: Missing dependency]",
-      node,
+      reviewNode,
       ctx,
     );
     expect(outcome.status).toBe("fail");
     expect(outcome.failure_reason).toBe("Missing dependency");
   });
 
-  it("parses [STATUS: partial_success] marker", () => {
+  it("parses [STATUS: partial_success] marker for auto_status=true node", () => {
     const outcome = defaultParseOutcome(
       "Mostly done. [STATUS: partial_success]",
-      node,
+      reviewNode,
       ctx,
     );
     expect(outcome.status).toBe("partial_success");
   });
 
-  it("parses [PREFERRED_LABEL: ...] for routing", () => {
+  // --- codergen nodes (box shape) ignore status markers ---
+
+  it("ignores [STATUS: fail] marker for codergen node (box shape)", () => {
     const outcome = defaultParseOutcome(
-      "Tests passed!\n[STATUS: success]\n[PREFERRED_LABEL: Yes]",
+      "Could not complete.\n[STATUS: fail]\n[FAILURE_REASON: Missing dependency]",
+      codergenNode,
+      ctx,
+    );
+    expect(outcome.status).toBe("success");
+    expect(outcome.failure_reason).toBeUndefined();
+  });
+
+  it("ignores [STATUS: success] marker for codergen node", () => {
+    const outcome = defaultParseOutcome(
+      "All done! [STATUS: success]",
+      codergenNode,
+      ctx,
+    );
+    expect(outcome.status).toBe("success");
+  });
+
+  it("ignores [STATUS: partial_success] marker for codergen node", () => {
+    const outcome = defaultParseOutcome(
+      "Mostly done. [STATUS: partial_success]",
+      codergenNode,
+      ctx,
+    );
+    expect(outcome.status).toBe("success");
+  });
+
+  // --- auto_status opt-in for codergen nodes ---
+
+  it("honours status markers when codergen node has auto_status=true", () => {
+    const node = makeNode({ attrs: { label: "Review", auto_status: true } });
+    const outcome = defaultParseOutcome(
+      "Issues found. [STATUS: fail]\n[FAILURE_REASON: Bad code]",
       node,
       ctx,
     );
+    expect(outcome.status).toBe("fail");
+    expect(outcome.failure_reason).toBe("Bad code");
+  });
+
+  it("honours auto_status='true' as DOT string", () => {
+    const node = makeNode({ attrs: { label: "Review", auto_status: "true" } });
+    const outcome = defaultParseOutcome(
+      "Issues found. [STATUS: fail]",
+      node,
+      ctx,
+    );
+    expect(outcome.status).toBe("fail");
+  });
+
+  it("honours auto_status=false even for non-box shapes", () => {
+    const node = makeNode({ attrs: { label: "Gate", shape: "diamond", auto_status: false } });
+    const outcome = defaultParseOutcome(
+      "Issues found. [STATUS: fail]",
+      node,
+      ctx,
+    );
+    expect(outcome.status).toBe("success");
+  });
+
+  it("honours auto_status='false' as DOT string for non-box shapes", () => {
+    const node = makeNode({ attrs: { label: "Gate", shape: "diamond", auto_status: "false" } });
+    const outcome = defaultParseOutcome("Issues found. [STATUS: fail]", node, ctx);
+    expect(outcome.status).toBe("success");
+    expect(outcome.failure_reason).toBeUndefined();
+  });
+
+  it("honours status markers by default for non-box shapes (e.g., ellipse)", () => {
+    const node = makeNode({ attrs: { label: "Check", shape: "ellipse" } });
+    const outcome = defaultParseOutcome("Issues found. [STATUS: fail]", node, ctx);
+    expect(outcome.status).toBe("fail");
+  });
+
+  // --- routing markers always parsed regardless of auto_status ---
+
+  it("parses [PREFERRED_LABEL: ...] for routing", () => {
+    const outcome = defaultParseOutcome(
+      "Tests passed!\n[STATUS: success]\n[PREFERRED_LABEL: Yes]",
+      codergenNode,
+      ctx,
+    );
+    expect(outcome.preferred_label).toBe("Yes");
+  });
+
+  it("parses routing markers alongside status markers on reviewNode", () => {
+    const outcome = defaultParseOutcome(
+      "Looks good!\n[STATUS: success]\n[PREFERRED_LABEL: Yes]",
+      reviewNode,
+      ctx,
+    );
+    expect(outcome.status).toBe("success");
     expect(outcome.preferred_label).toBe("Yes");
   });
 
   it("parses [NEXT: node_id] for suggested routing", () => {
     const outcome = defaultParseOutcome(
       "Done. [NEXT: deploy] [NEXT: notify]",
-      node,
+      codergenNode,
       ctx,
     );
     expect(outcome.suggested_next_ids).toEqual(["deploy", "notify"]);
   });
 
-  it("uses response text as failure_reason when no FAILURE_REASON marker", () => {
+  it("uses response text as failure_reason when no FAILURE_REASON marker (auto_status=true)", () => {
     const outcome = defaultParseOutcome(
       "Failed to compile. [STATUS: fail]",
-      node,
+      reviewNode,
       ctx,
     );
     expect(outcome.status).toBe("fail");
@@ -213,7 +306,7 @@ describe("defaultParseOutcome", () => {
 
   it("truncates long notes and response", () => {
     const longText = "x".repeat(3000);
-    const outcome = defaultParseOutcome(longText, node, ctx);
+    const outcome = defaultParseOutcome(longText, codergenNode, ctx);
     expect(outcome.notes!.length).toBeLessThanOrEqual(500);
     expect((outcome.context_updates!["implement.response"] as string).length).toBeLessThanOrEqual(2000);
   });
@@ -382,14 +475,24 @@ describe("PiBackend", () => {
     expect(outcome.context_updates!["implement.usage.cost"]).toBe(0.005);
   });
 
-  it("parses status markers from response", async () => {
+  it("parses status markers from response for auto_status=true node", async () => {
+    const { backend } = createTestBackend(
+      "I couldn't do it.\n[STATUS: fail]\n[FAILURE_REASON: Missing dependency]",
+    );
+    const reviewNode = makeNode({ id: "review", attrs: { label: "Review", auto_status: true } });
+    const outcome = await backend.run(reviewNode, "Do it", new Context());
+
+    expect(outcome.status).toBe("fail");
+    expect(outcome.failure_reason).toBe("Missing dependency");
+  });
+
+  it("ignores status markers for codergen node (default auto_status)", async () => {
     const { backend } = createTestBackend(
       "I couldn't do it.\n[STATUS: fail]\n[FAILURE_REASON: Missing dependency]",
     );
     const outcome = await backend.run(makeNode(), "Do it", new Context());
 
-    expect(outcome.status).toBe("fail");
-    expect(outcome.failure_reason).toBe("Missing dependency");
+    expect(outcome.status).toBe("success");
   });
 
   it("uses custom parseOutcome", async () => {

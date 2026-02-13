@@ -68,7 +68,7 @@ describe("LlmBackend", () => {
     expect(outcome.context_updates!["implement.usage.output_tokens"]).toBe(20);
   });
 
-  it("parses [STATUS: fail] marker in response", async () => {
+  it("ignores [STATUS: fail] marker for codergen node (default auto_status)", async () => {
     const client = new Client({
       providers: {
         mock: mockAdapter("I couldn't complete this.\n[STATUS: fail]\n[FAILURE_REASON: Missing dependency]"),
@@ -78,11 +78,26 @@ describe("LlmBackend", () => {
     const backend = new LlmBackend({ client, model: "test-model" });
     const outcome = await backend.run(makeNode(), "Do something", new Context());
 
+    expect(outcome.status).toBe("success");
+    expect(outcome.failure_reason).toBeUndefined();
+  });
+
+  it("parses [STATUS: fail] marker for auto_status=true node", async () => {
+    const client = new Client({
+      providers: {
+        mock: mockAdapter("I couldn't complete this.\n[STATUS: fail]\n[FAILURE_REASON: Missing dependency]"),
+      },
+    });
+
+    const backend = new LlmBackend({ client, model: "test-model" });
+    const reviewNode = makeNode({ id: "review", attrs: { label: "Review", auto_status: true } });
+    const outcome = await backend.run(reviewNode, "Do something", new Context());
+
     expect(outcome.status).toBe("fail");
     expect(outcome.failure_reason).toBe("Missing dependency");
   });
 
-  it("parses [PREFERRED_LABEL: ...] for routing", async () => {
+  it("parses [PREFERRED_LABEL: ...] for routing even on codergen node", async () => {
     const client = new Client({
       providers: {
         mock: mockAdapter("Tests passed!\n[STATUS: success]\n[PREFERRED_LABEL: Yes]"),
@@ -92,6 +107,7 @@ describe("LlmBackend", () => {
     const backend = new LlmBackend({ client, model: "test-model" });
     const outcome = await backend.run(makeNode(), "Run tests", new Context());
 
+    // Status ignored for codergen, but routing marker still parsed
     expect(outcome.status).toBe("success");
     expect(outcome.preferred_label).toBe("Yes");
   });
