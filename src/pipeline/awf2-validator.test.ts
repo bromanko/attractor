@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type { Awf2Workflow, Awf2Transition, Awf2HumanStage, Awf2Diagnostic } from "./awf2-types.js";
 import type { Severity } from "./types.js";
-import { validateAwf2, validateAwf2OrRaise } from "./awf2-validator.js";
+import { validateWorkflow, validateWorkflowOrRaise } from "./awf2-validator.js";
 
 type BaseWorkflow = Awf2Workflow & { transitions: Awf2Transition[] };
 
@@ -31,50 +31,50 @@ function baseWorkflow(): BaseWorkflow {
   };
 }
 
-describe("AWF2 validator", () => {
+describe("Workflow validator", () => {
   it("accepts a valid minimal workflow", () => {
     const wf = baseWorkflow();
-    const diags = validateAwf2(wf);
+    const diags = validateWorkflow(wf);
     expect(diags.filter((d) => d.severity === "error")).toEqual([]);
-    expect(() => validateAwf2OrRaise(wf)).not.toThrow();
+    expect(() => validateWorkflowOrRaise(wf)).not.toThrow();
   });
 
   it("throws on invalid workflow with descriptive message", () => {
     const wf = baseWorkflow();
     wf.start = "nonexistent";
-    expect(() => validateAwf2OrRaise(wf)).toThrow("AWF2 validation failed");
+    expect(() => validateWorkflowOrRaise(wf)).toThrow("Workflow validation failed");
   });
 
   it("rejects global transitions from human stages", () => {
     const wf = baseWorkflow();
     wf.transitions.push({ from: "review", to: "exit" });
-    const diags = validateAwf2(wf);
-    expectDiag(diags, "awf2_routing_partition", "error");
+    const diags = validateWorkflow(wf);
+    expectDiag(diags, "workflow_routing_partition", "error");
   });
 
   it("rejects transition with unknown source stage", () => {
     const wf = baseWorkflow();
     wf.transitions.push({ from: "ghost", to: "exit" });
-    const diags = validateAwf2(wf);
-    expectDiag(diags, "awf2_transition_from", "error");
-    expect(diags.find((d) => d.rule === "awf2_transition_from")!.message).toContain('"ghost"');
+    const diags = validateWorkflow(wf);
+    expectDiag(diags, "workflow_transition_from", "error");
+    expect(diags.find((d) => d.rule === "workflow_transition_from")!.message).toContain('"ghost"');
   });
 
   it("rejects transition with unknown target stage", () => {
     const wf = baseWorkflow();
     wf.transitions.push({ from: "plan", to: "nowhere" });
-    const diags = validateAwf2(wf);
-    expectDiag(diags, "awf2_transition_to", "error");
-    expect(diags.find((d) => d.rule === "awf2_transition_to")!.message).toContain('"nowhere"');
+    const diags = validateWorkflow(wf);
+    expectDiag(diags, "workflow_transition_to", "error");
+    expect(diags.find((d) => d.rule === "workflow_transition_to")!.message).toContain('"nowhere"');
   });
 
   it("rejects human stage with fewer than 2 options", () => {
     const wf = baseWorkflow();
     const reviewStage = wf.stages.find((s) => s.id === "review") as Awf2HumanStage;
     reviewStage.options = [{ key: "a", label: "Approve", to: "exit" }];
-    const diags = validateAwf2(wf);
-    expectDiag(diags, "awf2_human_options", "error");
-    expect(diags.find((d) => d.rule === "awf2_human_options")!.message).toContain('"review"');
+    const diags = validateWorkflow(wf);
+    expectDiag(diags, "workflow_human_options", "error");
+    expect(diags.find((d) => d.rule === "workflow_human_options")!.message).toContain('"review"');
   });
 
   it("requires decision catch-all", () => {
@@ -90,104 +90,104 @@ describe("AWF2 validator", () => {
       transitions: [{ from: "build", to: "gate" }],
     };
 
-    const diags = validateAwf2(wf);
-    expectDiag(diags, "awf2_decision_catch_all", "error");
+    const diags = validateWorkflow(wf);
+    expectDiag(diags, "workflow_decision_catch_all", "error");
   });
 
   it("rejects transition with malformed expression syntax", () => {
     const wf = baseWorkflow();
     wf.transitions[0].when = 'outcome("x"';
-    const diags = validateAwf2(wf);
-    expectDiag(diags, "awf2_expression_syntax", "error");
+    const diags = validateWorkflow(wf);
+    expectDiag(diags, "workflow_expression_syntax", "error");
   });
 
   it("rejects unknown expression stage refs", () => {
     const wf = baseWorkflow();
     wf.transitions[0].when = 'outcome("missing") == "success"';
-    const diags = validateAwf2(wf);
-    expectDiag(diags, "awf2_expression_stage_ref", "error");
+    const diags = validateWorkflow(wf);
+    expectDiag(diags, "workflow_expression_stage_ref", "error");
   });
 
   it("rejects workflow with wrong version", () => {
     const wf = baseWorkflow();
     (wf as { version: number }).version = 1;
-    const diags = validateAwf2(wf);
-    expectDiag(diags, "awf2_version", "error");
-    expect(diags.find((d) => d.rule === "awf2_version")!.message).toContain("got: 1");
+    const diags = validateWorkflow(wf);
+    expectDiag(diags, "workflow_version", "error");
+    expect(diags.find((d) => d.rule === "workflow_version")!.message).toContain("got: 1");
   });
 
   it("rejects start referencing a missing stage", () => {
     const wf = baseWorkflow();
     wf.start = "nonexistent";
-    const diags = validateAwf2(wf);
-    expectDiag(diags, "awf2_start_exists", "error");
-    expect(diags.find((d) => d.rule === "awf2_start_exists")!.message).toContain('"nonexistent"');
+    const diags = validateWorkflow(wf);
+    expectDiag(diags, "workflow_start_exists", "error");
+    expect(diags.find((d) => d.rule === "workflow_start_exists")!.message).toContain('"nonexistent"');
   });
 
   it("rejects duplicate stage IDs", () => {
     const wf = baseWorkflow();
     wf.stages.push({ id: "plan", kind: "llm", prompt: "duplicate" });
-    const diags = validateAwf2(wf);
-    expectDiag(diags, "awf2_duplicate_stage", "error");
-    expect(diags.find((d) => d.rule === "awf2_duplicate_stage")!.message).toContain('"plan"');
+    const diags = validateWorkflow(wf);
+    expectDiag(diags, "workflow_duplicate_stage", "error");
+    expect(diags.find((d) => d.rule === "workflow_duplicate_stage")!.message).toContain('"plan"');
   });
 
   it("rejects model_profile referencing unknown profile", () => {
     const wf = baseWorkflow();
     wf.stages[0] = { id: "plan", kind: "llm", prompt: "plan it", model_profile: "fast" };
-    const diags = validateAwf2(wf);
-    expectDiag(diags, "awf2_model_profile", "error");
-    expect(diags.find((d) => d.rule === "awf2_model_profile")!.message).toContain('"fast"');
+    const diags = validateWorkflow(wf);
+    expectDiag(diags, "workflow_model_profile", "error");
+    expect(diags.find((d) => d.rule === "workflow_model_profile")!.message).toContain('"fast"');
   });
 
   it("accepts model_profile referencing a defined profile", () => {
     const wf = baseWorkflow();
     wf.models = { profile: { fast: { model: "claude-haiku" } } };
     wf.stages[0] = { id: "plan", kind: "llm", prompt: "plan it", model_profile: "fast" };
-    const diags = validateAwf2(wf);
-    expect(diags.some((d) => d.rule === "awf2_model_profile")).toBe(false);
+    const diags = validateWorkflow(wf);
+    expect(diags.some((d) => d.rule === "workflow_model_profile")).toBe(false);
   });
 
   it("rejects retry with max_attempts of 0", () => {
     const wf = baseWorkflow();
     wf.stages[0] = { id: "plan", kind: "llm", prompt: "plan it", retry: { max_attempts: 0 } };
-    const diags = validateAwf2(wf);
-    expectDiag(diags, "awf2_retry_max_attempts", "error");
+    const diags = validateWorkflow(wf);
+    expectDiag(diags, "workflow_retry_max_attempts", "error");
   });
 
   it("rejects retry with non-integer max_attempts", () => {
     const wf = baseWorkflow();
     wf.stages[0] = { id: "plan", kind: "llm", prompt: "plan it", retry: { max_attempts: 1.5 } };
-    const diags = validateAwf2(wf);
-    expectDiag(diags, "awf2_retry_max_attempts", "error");
+    const diags = validateWorkflow(wf);
+    expectDiag(diags, "workflow_retry_max_attempts", "error");
   });
 
   it("accepts valid retry config", () => {
     const wf = baseWorkflow();
     wf.stages[0] = { id: "plan", kind: "llm", prompt: "plan it", retry: { max_attempts: 3 } };
-    const diags = validateAwf2(wf);
-    expect(diags.some((d) => d.rule === "awf2_retry_max_attempts")).toBe(false);
+    const diags = validateWorkflow(wf);
+    expect(diags.some((d) => d.rule === "workflow_retry_max_attempts")).toBe(false);
   });
 
   it("rejects prompt_file with directory traversal", () => {
     const wf = baseWorkflow();
     wf.stages[0] = { id: "plan", kind: "llm", prompt_file: "../../etc/passwd" };
-    const diags = validateAwf2(wf);
-    expectDiag(diags, "awf2_prompt_file_path", "error");
+    const diags = validateWorkflow(wf);
+    expectDiag(diags, "workflow_prompt_file_path", "error");
   });
 
   it("rejects prompt_file with absolute path", () => {
     const wf = baseWorkflow();
     wf.stages[0] = { id: "plan", kind: "llm", prompt_file: "/etc/passwd" };
-    const diags = validateAwf2(wf);
-    expectDiag(diags, "awf2_prompt_file_path", "error");
+    const diags = validateWorkflow(wf);
+    expectDiag(diags, "workflow_prompt_file_path", "error");
   });
 
   it("accepts prompt_file with valid relative path", () => {
     const wf = baseWorkflow();
     wf.stages[0] = { id: "plan", kind: "llm", prompt_file: "prompts/plan.md" };
-    const diags = validateAwf2(wf);
-    expect(diags.some((d) => d.rule === "awf2_prompt_file_path")).toBe(false);
+    const diags = validateWorkflow(wf);
+    expect(diags.some((d) => d.rule === "workflow_prompt_file_path")).toBe(false);
   });
 
   it("rejects tool stages with empty command", () => {
@@ -201,16 +201,16 @@ describe("AWF2 validator", () => {
       ],
       transitions: [{ from: "run", to: "exit" }],
     };
-    const diags = validateAwf2(wf);
-    expectDiag(diags, "awf2_tool_command", "error");
-    expect(diags.find((d) => d.rule === "awf2_tool_command")!.message).toContain('"run"');
+    const diags = validateWorkflow(wf);
+    expectDiag(diags, "workflow_tool_command", "error");
+    expect(diags.find((d) => d.rule === "workflow_tool_command")!.message).toContain('"run"');
   });
 
   it("rejects llm stages that define both prompt and prompt_file", () => {
     const wf = baseWorkflow();
     wf.stages[0] = { id: "plan", kind: "llm", prompt: "x", prompt_file: "prompts/x.md" };
-    const diags = validateAwf2(wf);
-    expectDiag(diags, "awf2_llm_prompt", "error");
+    const diags = validateWorkflow(wf);
+    expectDiag(diags, "workflow_llm_prompt", "error");
   });
 
   it("rejects workflows without reachable exit", () => {
@@ -223,7 +223,7 @@ describe("AWF2 validator", () => {
       { key: "r2", label: "Revise again", to: "plan" },
     ];
 
-    const diags = validateAwf2(wf);
-    expectDiag(diags, "awf2_reachable_exit", "error");
+    const diags = validateWorkflow(wf);
+    expectDiag(diags, "workflow_reachable_exit", "error");
   });
 });

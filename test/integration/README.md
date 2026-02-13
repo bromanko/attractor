@@ -1,6 +1,6 @@
 # Attractor Integration Tests
 
-End-to-end tests that exercise the full pipeline engine through real DOT
+End-to-end tests that exercise the full pipeline engine through real KDL
 workflow files. Each workflow targets a specific feature or failure mode.
 
 ## Running

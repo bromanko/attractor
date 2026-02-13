@@ -444,7 +444,7 @@ function parseTransitions(nodes: KdlNode[]): Awf2Transition[] {
   return transitions;
 }
 
-export function parseAwf2Kdl(source: string): Awf2Workflow {
+export function parseWorkflowKdl(source: string): Awf2Workflow {
   const parser = new Parser(tokenize(source));
   const nodes = parser.parseNodes(false);
 

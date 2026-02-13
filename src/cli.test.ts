@@ -10,9 +10,9 @@ let runPipelineImpl: ((config: any) => Promise<any>) | undefined;
 
 vi.mock("./pipeline/index.js", () => {
   return {
-    parseDot: vi.fn(() => currentGraph),
-    validate: vi.fn(() => []),
-    validateOrRaise: vi.fn(() => undefined),
+    parseWorkflowKdl: vi.fn(() => ({ version: 2, name: "wf", start: "start", stages: [] })),
+    workflowToGraph: vi.fn(() => currentGraph),
+    validateWorkflow: vi.fn(() => []),
     runPipeline: vi.fn(async (config: any) => {
       if (runPipelineImpl) return runPipelineImpl(config);
       for (const event of currentEvents) {
@@ -82,8 +82,8 @@ describe("cmdRun spinner gating around human stages", () => {
 
   beforeEach(async () => {
     tempDir = await mkdtemp(join(tmpdir(), "attractor-cli-test-"));
-    dotPath = join(tempDir, "pipeline.dot");
-    await writeFile(dotPath, "digraph G {}", "utf-8");
+    dotPath = join(tempDir, "pipeline.awf.kdl");
+    await writeFile(dotPath, 'workflow "x" { version 2 start "exit" stage "exit" kind="exit" }', "utf-8");
     currentEvents = [];
     runPipelineImpl = undefined;
     currentGraph = {
@@ -156,8 +156,8 @@ describe("cmdRun structured failure output", () => {
 
   beforeEach(async () => {
     tempDir = await mkdtemp(join(tmpdir(), "attractor-cli-test-"));
-    dotPath = join(tempDir, "pipeline.dot");
-    await writeFile(dotPath, "digraph G {}", "utf-8");
+    dotPath = join(tempDir, "pipeline.awf.kdl");
+    await writeFile(dotPath, 'workflow "x" { version 2 start "exit" stage "exit" kind="exit" }', "utf-8");
     currentEvents = [];
     runPipelineImpl = undefined;
     currentGraph = {
@@ -297,8 +297,8 @@ describe("cmdRun cancellation", () => {
 
   beforeEach(async () => {
     tempDir = await mkdtemp(join(tmpdir(), "attractor-cli-test-"));
-    dotPath = join(tempDir, "pipeline.dot");
-    await writeFile(dotPath, "digraph G {}", "utf-8");
+    dotPath = join(tempDir, "pipeline.awf.kdl");
+    await writeFile(dotPath, 'workflow "x" { version 2 start "exit" stage "exit" kind="exit" }', "utf-8");
     currentEvents = [];
     runPipelineImpl = undefined;
     currentGraph = {
@@ -392,8 +392,8 @@ describe("cmdRun usage output", () => {
 
   beforeEach(async () => {
     tempDir = await mkdtemp(join(tmpdir(), "attractor-cli-test-"));
-    dotPath = join(tempDir, "pipeline.dot");
-    await writeFile(dotPath, "digraph G {}", "utf-8");
+    dotPath = join(tempDir, "pipeline.awf.kdl");
+    await writeFile(dotPath, 'workflow "x" { version 2 start "exit" stage "exit" kind="exit" }', "utf-8");
     currentEvents = [];
     runPipelineImpl = undefined;
     currentGraph = {

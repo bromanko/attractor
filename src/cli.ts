@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Attractor CLI — run and validate DOT-defined AI pipelines.
+ * Attractor CLI — run and validate KDL workflow files.
  *
  * Usage:
  *   attractor run <pipeline.awf.kdl> [options]
@@ -13,15 +13,12 @@ import { resolve, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { existsSync } from "node:fs";
 import {
-  parseDot,
-  validate,
-  validateOrRaise,
   runPipeline,
   PiBackend,
   AutoApproveInterviewer,
-  parseAwf2Kdl,
-  validateAwf2,
-  awf2ToGraph,
+  parseWorkflowKdl,
+  validateWorkflow,
+  workflowToGraph,
 } from "./pipeline/index.js";
 import type {
   PipelineEvent,
@@ -31,7 +28,7 @@ import type {
   Interviewer,
   Checkpoint,
   Graph,
-  Awf2Workflow,
+  WorkflowDefinition,
 } from "./pipeline/index.js";
 import {
   AuthStorage,
@@ -59,7 +56,7 @@ const MARKDOWN_HINT_RE = /[#*`\[\]\n]/;
 
 function usage(): never {
   console.log(`
-attractor — DOT-based AI pipeline runner
+attractor — KDL workflow runner
 
 Usage:
   attractor run <pipeline.awf.kdl> [options]   Run a pipeline
@@ -123,12 +120,12 @@ function isKdlWorkflowPath(filePath: string): boolean {
   return filePath.toLowerCase().endsWith(".kdl");
 }
 
-function parseWorkflowText(filePath: string, text: string): { graph: Graph; awf2?: Awf2Workflow } {
-  if (isKdlWorkflowPath(filePath)) {
-    const awf2 = parseAwf2Kdl(text);
-    return { graph: awf2ToGraph(awf2), awf2 };
+function parseWorkflowText(filePath: string, text: string): { graph: Graph; workflow: WorkflowDefinition } {
+  if (!isKdlWorkflowPath(filePath)) {
+    throw new Error("Only .awf.kdl workflow files are supported.");
   }
-  return { graph: parseDot(text) };
+  const workflow = parseWorkflowKdl(text);
+  return { graph: workflowToGraph(workflow), workflow };
 }
 
 /**
@@ -153,43 +150,20 @@ function getStageModel(
 
 async function cmdValidate(filePath: string): Promise<void> {
   const text = await readFile(resolve(filePath), "utf-8");
-
-  if (isKdlWorkflowPath(filePath)) {
-    const awf2 = parseAwf2Kdl(text);
-    const diagnostics = validateAwf2(awf2);
-    const errors = diagnostics.filter((d) => d.severity === "error");
-    const warnings = diagnostics.filter((d) => d.severity === "warning");
-
-    if (diagnostics.length === 0) {
-      console.log(`✅ ${filePath}: valid (${awf2.stages.length} stages)`);
-      console.log(`   Goal: ${awf2.goal ?? "(none)"}`);
-      console.log(`   Start: ${awf2.start}`);
-      console.log(`   Exit:  ${awf2.stages.filter((s) => s.kind === "exit").map((s) => s.id).join(", ") || "?"}`);
-      return;
-    }
-
-    for (const d of diagnostics) {
-      const location = d.node_id ? ` (node: ${d.node_id})` : d.edge ? ` (edge: ${d.edge[0]} → ${d.edge[1]})` : "";
-      console.log(`${severityIcon(d.severity)} [${d.rule}]${location}: ${d.message}`);
-      if (d.fix) console.log(`   Fix: ${d.fix}`);
-    }
-
-    console.log();
-    console.log(`${errors.length} error(s), ${warnings.length} warning(s)`);
-    if (errors.length > 0) process.exit(1);
-    return;
+  if (!isKdlWorkflowPath(filePath)) {
+    throw new Error("Only .awf.kdl workflow files are supported.");
   }
 
-  const graph = parseDot(text);
-  const diagnostics = validate(graph);
+  const workflow = parseWorkflowKdl(text);
+  const diagnostics = validateWorkflow(workflow);
   const errors = diagnostics.filter((d) => d.severity === "error");
   const warnings = diagnostics.filter((d) => d.severity === "warning");
 
   if (diagnostics.length === 0) {
-    console.log(`✅ ${filePath}: valid (${graph.nodes.length} nodes, ${graph.edges.length} edges)`);
-    console.log(`   Goal: ${graph.attrs.goal ?? "(none)"}`);
-    console.log(`   Start: ${graph.nodes.find((n) => n.attrs.shape === "Mdiamond")?.id ?? "?"}`);
-    console.log(`   Exit:  ${graph.nodes.filter((n) => n.attrs.shape === "Msquare").map((n) => n.id).join(", ") || "?"}`);
+    console.log(`✅ ${filePath}: valid (${workflow.stages.length} stages)`);
+    console.log(`   Goal: ${workflow.goal ?? "(none)"}`);
+    console.log(`   Start: ${workflow.start}`);
+    console.log(`   Exit:  ${workflow.stages.filter((s) => s.kind === "exit").map((s) => s.id).join(", ") || "?"}`);
     return;
   }
 
@@ -201,7 +175,6 @@ async function cmdValidate(filePath: string): Promise<void> {
 
   console.log();
   console.log(`${errors.length} error(s), ${warnings.length} warning(s)`);
-
   if (errors.length > 0) process.exit(1);
 }
 
@@ -216,20 +189,14 @@ export async function cmdRun(
   // Apply --goal override before validation
   if (args.goal && typeof args.goal === "string") {
     graph.attrs.goal = args.goal;
-    if (parsed.awf2) {
-      parsed.awf2.goal = args.goal;
-    }
+    parsed.workflow.goal = args.goal;
   }
 
-  if (parsed.awf2) {
-    const diags = validateAwf2(parsed.awf2);
-    const errors = diags.filter((d) => d.severity === "error");
-    if (errors.length > 0) {
-      const msg = errors.map((e) => `  [${e.rule}] ${e.message}`).join("\n");
-      throw new Error(`AWF2 validation failed:\n${msg}`);
-    }
-  } else {
-    validateOrRaise(graph);
+  const diags = validateWorkflow(parsed.workflow);
+  const errors = diags.filter((d) => d.severity === "error");
+  if (errors.length > 0) {
+    const msg = errors.map((e) => `  [${e.rule}] ${e.message}`).join("\n");
+    throw new Error(`Workflow validation failed:\n${msg}`);
   }
 
   const modelName = (args.model as string) ?? "claude-opus-4-6";

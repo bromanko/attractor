@@ -1,0 +1,12 @@
+workflow "FailNoRoute" {
+  version 2
+  goal "Fail when no failure route matches"
+  start "build"
+
+  stage "build" kind="llm" prompt="Build the feature"
+  stage "exit" kind="exit"
+
+  // Intentionally no failure transition from "build" — tests pipeline behavior
+  // when a stage fails and no matching route exists.
+  transition from="build" to="exit" when="outcome(\"build\") == \"success\""
+}

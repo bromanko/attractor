@@ -1,7 +1,7 @@
 {
   "name": "attractor",
   "version": "0.1.0",
-  "description": "A DOT-based pipeline runner that uses directed graphs to orchestrate multi-stage AI workflows. Built from the StrongDM Software Factory NLSpecs.",
+  "description": "A KDL workflow runner for orchestrating multi-stage AI workflows. Built from the StrongDM Software Factory NLSpecs.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

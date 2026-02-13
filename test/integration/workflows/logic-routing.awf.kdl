@@ -1,0 +1,21 @@
+workflow "LogicRouting" {
+  version 2
+  goal "Test logical routing"
+  start "build"
+
+  stage "build" kind="llm" prompt="Build"
+
+  stage "gate" kind="decision" {
+    route when="outcome(\"build\") == \"success\" && !exists(\"build.blocker\")" to="pass"
+    route when="output(\"build.review\") == \"pass\"" to="pass"
+    route when="true" to="fix"
+  }
+
+  stage "pass" kind="llm" prompt="Ship"
+  stage "fix" kind="llm" prompt="Fix"
+  stage "exit" kind="exit"
+
+  transition from="build" to="gate"
+  transition from="pass" to="exit"
+  transition from="fix" to="exit"
+}

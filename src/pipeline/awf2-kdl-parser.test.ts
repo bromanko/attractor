@@ -1,9 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { parseAwf2Kdl } from "./awf2-kdl-parser.js";
+import { parseWorkflowKdl } from "./awf2-kdl-parser.js";
 
-describe("parseAwf2Kdl", () => {
-  it("parses a minimal AWF2 workflow", () => {
-    const wf = parseAwf2Kdl(`
+describe("parseWorkflowKdl", () => {
+  it("parses a minimal Workflow workflow", () => {
+    const wf = parseWorkflowKdl(`
       workflow "demo" {
         version 2
         start "plan"
@@ -23,7 +23,7 @@ describe("parseAwf2Kdl", () => {
   });
 
   it("parses human options and decision routes", () => {
-    const wf = parseAwf2Kdl(`
+    const wf = parseWorkflowKdl(`
       workflow "demo" {
         version 2
         start "review"

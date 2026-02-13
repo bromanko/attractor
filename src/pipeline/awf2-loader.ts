@@ -1,14 +1,14 @@
 import { extname } from "node:path";
 import type { Graph, GraphNode, GraphEdge } from "./types.js";
 import type { Awf2Workflow, Awf2Stage, Awf2Transition } from "./awf2-types.js";
-import { parseAwf2Kdl } from "./awf2-kdl-parser.js";
-import { validateAwf2OrRaise } from "./awf2-validator.js";
+import { parseWorkflowKdl } from "./awf2-kdl-parser.js";
+import { validateWorkflowOrRaise } from "./awf2-validator.js";
 import { compileAwf2ExprToEngineConditions, type EngineConditions } from "./awf2-expr.js";
 
 export type LoadedWorkflow = {
-  format: "dot" | "awf2";
+  format: "kdl";
   graph: Graph;
-  awf2?: Awf2Workflow;
+  workflow: Awf2Workflow;
 };
 
 function encodeOrderWeight(priority: number | undefined, index: number, total: number): number {
@@ -96,7 +96,7 @@ function addTransitionEdges(edges: GraphEdge[], transitions: Awf2Transition[]): 
   }
 }
 
-export function awf2ToGraph(workflow: Awf2Workflow): Graph {
+export function workflowToGraph(workflow: Awf2Workflow): Graph {
   const startNodeId = "__start__";
 
   const nodes: GraphNode[] = [
@@ -153,9 +153,9 @@ export function awf2ToGraph(workflow: Awf2Workflow): Graph {
   };
 }
 
-export function parseAwf2Workflow(source: string): Awf2Workflow {
-  const workflow = parseAwf2Kdl(source);
-  validateAwf2OrRaise(workflow);
+export function parseWorkflowDefinition(source: string): Awf2Workflow {
+  const workflow = parseWorkflowKdl(source);
+  validateWorkflowOrRaise(workflow);
   return workflow;
 }
 
@@ -163,10 +163,9 @@ export function parseWorkflowToGraph(source: string, filePath?: string): LoadedW
   const ext = filePath ? extname(filePath).toLowerCase() : "";
 
   if (ext === ".kdl") {
-    const awf2 = parseAwf2Workflow(source);
-    return { format: "awf2", graph: awf2ToGraph(awf2), awf2 };
+    const workflow = parseWorkflowDefinition(source);
+    return { format: "kdl", graph: workflowToGraph(workflow), workflow };
   }
 
-  // dot parsing is still handled by existing call sites for now.
-  throw new Error("parseWorkflowToGraph currently supports only .kdl paths. Use parseDot for .dot workflows.");
+  throw new Error("Only .kdl workflow files are supported.");
 }

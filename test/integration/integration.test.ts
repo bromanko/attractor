@@ -1,7 +1,7 @@
 /**
  * Integration tests for the Attractor pipeline engine.
  *
- * Each test loads a real DOT workflow file, runs it through the engine
+ * Each test loads a real workflow file, runs it through the engine
  * with a mock backend (no LLM calls), and asserts on behavior.
  */
 
@@ -11,11 +11,9 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { parseDot } from "../../src/pipeline/dot-parser.js";
-import { parseAwf2Workflow, awf2ToGraph } from "../../src/pipeline/awf2-loader.js";
-import { parseAwf2Kdl } from "../../src/pipeline/awf2-kdl-parser.js";
-import { validateAwf2, validateAwf2OrRaise } from "../../src/pipeline/awf2-validator.js";
-import { validate } from "../../src/pipeline/validator.js";
+import { parseWorkflowDefinition, workflowToGraph } from "../../src/pipeline/awf2-loader.js";
+import { parseWorkflowKdl } from "../../src/pipeline/awf2-kdl-parser.js";
+import { validateWorkflow, validateWorkflowOrRaise } from "../../src/pipeline/awf2-validator.js";
 import { runPipeline } from "../../src/pipeline/engine.js";
 import { LlmBackend } from "../../src/pipeline/llm-backend.js";
 import { Client } from "../../src/llm/client.js";
@@ -41,22 +39,13 @@ const WORKFLOWS = join(import.meta.dirname, "workflows");
 
 async function loadWorkflow(name: string) {
   const source = await readFile(join(WORKFLOWS, name), "utf-8");
-  if (name.endsWith(".awf.kdl")) {
-    const awf2 = parseAwf2Workflow(source);
-    return awf2ToGraph(awf2);
-  }
-  return parseDot(source);
+  const workflow = parseWorkflowDefinition(source);
+  return workflowToGraph(workflow);
 }
 
-async function loadAwf2Workflow(name: string) {
+async function loadWorkflowDefinition(name: string) {
   const source = await readFile(join(WORKFLOWS, name), "utf-8");
-  const awf2 = parseAwf2Workflow(source);
-  return awf2ToGraph(awf2);
-}
-
-async function loadAwf2Definition(name: string) {
-  const source = await readFile(join(WORKFLOWS, name), "utf-8");
-  return parseAwf2Kdl(source);
+  return parseWorkflowKdl(source);
 }
 
 let suiteTempRootPromise: Promise<string> | undefined;
@@ -652,8 +641,8 @@ describe("Large pipeline", () => {
   });
 
   it("validates without errors", async () => {
-    const graph = await loadWorkflow("large-pipeline.awf.kdl");
-    const diagnostics = validate(graph);
+    const workflow = await loadWorkflowDefinition("large-pipeline.awf.kdl");
+    const diagnostics = validateWorkflow(workflow);
     const errors = diagnostics.filter((d) => d.severity === "error");
     expect(errors).toHaveLength(0);
   });
@@ -702,33 +691,33 @@ describe("Workspace lifecycle", () => {
 
 describe("Validation", () => {
   it("rejects workflow with missing start target", async () => {
-    const wf = await loadAwf2Definition("invalid-no-start.awf.kdl");
-    const diagnostics = validateAwf2(wf);
+    const wf = await loadWorkflowDefinition("invalid-no-start.awf.kdl");
+    const diagnostics = validateWorkflow(wf);
     const errors = diagnostics.filter((d) => d.severity === "error");
 
     expect(errors.length).toBeGreaterThan(0);
-    expect(errors.some((d) => d.rule === "awf2_start_exists")).toBe(true);
+    expect(errors.some((d) => d.rule === "workflow_start_exists")).toBe(true);
   });
 
   it("rejects workflow with no exit node", async () => {
-    const wf = await loadAwf2Definition("invalid-no-exit.awf.kdl");
-    const diagnostics = validateAwf2(wf);
+    const wf = await loadWorkflowDefinition("invalid-no-exit.awf.kdl");
+    const diagnostics = validateWorkflow(wf);
     const errors = diagnostics.filter((d) => d.severity === "error");
 
     expect(errors.length).toBeGreaterThan(0);
-    expect(errors.some((d) => d.rule === "awf2_reachable_exit")).toBe(true);
+    expect(errors.some((d) => d.rule === "workflow_reachable_exit")).toBe(true);
   });
 
   it("flags unreachable stages", async () => {
-    const wf = await loadAwf2Definition("invalid-unreachable.awf.kdl");
-    const diagnostics = validateAwf2(wf);
+    const wf = await loadWorkflowDefinition("invalid-unreachable.awf.kdl");
+    const diagnostics = validateWorkflow(wf);
 
-    expect(diagnostics.some((d) => d.rule === "awf2_reachability")).toBe(true);
+    expect(diagnostics.some((d) => d.rule === "workflow_reachability")).toBe(true);
   });
 
-  it("throws on validateAwf2OrRaise for invalid workflows", async () => {
-    const wf = await loadAwf2Definition("invalid-no-start.awf.kdl");
-    expect(() => validateAwf2OrRaise(wf)).toThrow(/AWF2 validation failed/i);
+  it("throws on validateWorkflowOrRaise for invalid workflows", async () => {
+    const wf = await loadWorkflowDefinition("invalid-no-start.awf.kdl");
+    expect(() => validateWorkflowOrRaise(wf)).toThrow(/Workflow validation failed/i);
   });
 
   it("validates all valid workflow files without errors", async () => {
@@ -753,12 +742,12 @@ describe("Validation", () => {
     const workflows = await Promise.all(
       validFiles.map(async (file) => ({
         file,
-        wf: await loadAwf2Definition(file),
+        wf: await loadWorkflowDefinition(file),
       })),
     );
 
     for (const { file, wf } of workflows) {
-      const diagnostics = validateAwf2(wf);
+      const diagnostics = validateWorkflow(wf);
       const errors = diagnostics.filter((d) => d.severity === "error");
       expect(errors, `${file} should have no validation errors`).toHaveLength(0);
     }
@@ -900,12 +889,12 @@ describe("CLI", () => {
 // 20. auto_status from DOT → status marker parsing (end-to-end)
 // ===========================================================================
 
-describe("auto_status DOT parsing end-to-end", () => {
-  it("parses [STATUS: fail] for auto_status=true node loaded from DOT", async () => {
+describe("auto_status parsing end-to-end", () => {
+  it("parses [STATUS: fail] for auto_status=true node loaded from workflow", async () => {
     const graph = await loadWorkflow("auto-status.awf.kdl");
     const logs = await tempDir();
 
-    // Verify the DOT parser produced the correct auto_status type
+    // Verify the workflow parser produced the correct auto_status type
     const reviewNode = graph.nodes.find((n) => n.id === "review")!;
     expect(reviewNode.attrs.auto_status).toBe(true);
 
@@ -926,7 +915,7 @@ describe("auto_status DOT parsing end-to-end", () => {
     expect(result.lastOutcome?.failure_reason).toBe("Missing error handling");
   });
 
-  it("ignores [STATUS: fail] for codergen node (no auto_status) loaded from DOT", async () => {
+  it("ignores [STATUS: fail] for codergen node (no auto_status) loaded from workflow", async () => {
     const graph = await loadWorkflow("auto-status.awf.kdl");
     const logs = await tempDir();
 
@@ -952,12 +941,12 @@ describe("auto_status DOT parsing end-to-end", () => {
 });
 
 // ===========================================================================
-// 21. AWF2 logical routing end-to-end
+// 21. Workflow logical routing end-to-end
 // ===========================================================================
 
-describe("AWF2 expression routing", () => {
+describe("Workflow expression routing", () => {
   it("routes via !exists branch when blocker output is absent", async () => {
-    const graph = await loadAwf2Workflow("awf2-logic-routing.awf.kdl");
+    const graph = await loadWorkflow("logic-routing.awf.kdl");
     const logs = await tempDir();
 
     const backend = nodeOutcomeBackend({
@@ -977,7 +966,7 @@ describe("AWF2 expression routing", () => {
   });
 
   it("routes via OR fallback branch when blocker exists", async () => {
-    const graph = await loadAwf2Workflow("awf2-logic-routing.awf.kdl");
+    const graph = await loadWorkflow("logic-routing.awf.kdl");
     const logs = await tempDir();
 
     const backend = nodeOutcomeBackend({
@@ -998,7 +987,7 @@ describe("AWF2 expression routing", () => {
   });
 
   it("routes via != conjunction when risk is not high", async () => {
-    const graph = await loadAwf2Workflow("awf2-logic-routing-neq.awf.kdl");
+    const graph = await loadWorkflow("logic-routing-neq.awf.kdl");
     const logs = await tempDir();
 
     const backend = nodeOutcomeBackend({
@@ -1018,7 +1007,7 @@ describe("AWF2 expression routing", () => {
   });
 
   it("falls through to fix when != conjunction fails", async () => {
-    const graph = await loadAwf2Workflow("awf2-logic-routing-neq.awf.kdl");
+    const graph = await loadWorkflow("logic-routing-neq.awf.kdl");
     const logs = await tempDir();
 
     const backend = nodeOutcomeBackend({
@@ -1038,7 +1027,7 @@ describe("AWF2 expression routing", () => {
   });
 
   it("routes to exit when build succeeds (complementary success path)", async () => {
-    const graph = await loadAwf2Workflow("awf2-fail-no-route.awf.kdl");
+    const graph = await loadWorkflow("fail-no-route.awf.kdl");
     const logs = await tempDir();
 
     const backend = nodeOutcomeBackend({
@@ -1052,7 +1041,7 @@ describe("AWF2 expression routing", () => {
   });
 
   it("fails pipeline when a failed stage has no matching failure transition", async () => {
-    const graph = await loadAwf2Workflow("awf2-fail-no-route.awf.kdl");
+    const graph = await loadWorkflow("fail-no-route.awf.kdl");
     const logs = await tempDir();
     const { events, onEvent } = eventCollector();
 

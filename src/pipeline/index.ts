@@ -16,9 +16,6 @@ export type {
 
 export { Context, SHAPE_TO_TYPE, KNOWN_HANDLER_TYPES } from "./types.js";
 
-// DOT Parser
-export { parseDot } from "./dot-parser.js";
-
 // Validator
 export { validate, validateOrRaise, findStartNode, findExitNodes } from "./validator.js";
 
@@ -59,28 +56,28 @@ export type { ToolFailureClass, ToolFailureDetails } from "./tool-failure.js";
 // Stylesheet
 export { applyStylesheet, parseStylesheet } from "./stylesheet.js";
 
-// AWF2 (KDL workflow format v2)
+// KDL workflow format
 export type {
-  Awf2Workflow,
-  Awf2Stage,
-  Awf2StageKind,
-  Awf2LlmStage,
-  Awf2ToolStage,
-  Awf2HumanStage,
-  Awf2DecisionStage,
-  Awf2ExitStage,
-  Awf2WorkspaceStage,
-  Awf2HumanOption,
-  Awf2DecisionRoute,
-  Awf2Transition,
-  Awf2Retry,
-  Awf2Models,
-  Awf2ModelProfile,
-  Awf2Diagnostic,
+  Awf2Workflow as WorkflowDefinition,
+  Awf2Stage as WorkflowStage,
+  Awf2StageKind as WorkflowStageKind,
+  Awf2LlmStage as LlmWorkflowStage,
+  Awf2ToolStage as ToolWorkflowStage,
+  Awf2HumanStage as HumanWorkflowStage,
+  Awf2DecisionStage as DecisionWorkflowStage,
+  Awf2ExitStage as ExitWorkflowStage,
+  Awf2WorkspaceStage as WorkspaceWorkflowStage,
+  Awf2HumanOption as HumanOption,
+  Awf2DecisionRoute as DecisionRoute,
+  Awf2Transition as WorkflowTransition,
+  Awf2Retry as RetryPolicy,
+  Awf2Models as WorkflowModels,
+  Awf2ModelProfile as WorkflowModelProfile,
+  Awf2Diagnostic as WorkflowDiagnostic,
 } from "./awf2-types.js";
-export { validateAwf2, validateAwf2OrRaise } from "./awf2-validator.js";
-export { parseAwf2Kdl } from "./awf2-kdl-parser.js";
-export { parseAwf2Workflow, awf2ToGraph, parseWorkflowToGraph } from "./awf2-loader.js";
+export { validateWorkflow, validateWorkflowOrRaise } from "./awf2-validator.js";
+export { parseWorkflowKdl } from "./awf2-kdl-parser.js";
+export { parseWorkflowDefinition, workflowToGraph, parseWorkflowToGraph } from "./awf2-loader.js";
 
 // Pi SDK Backend
 export { PiBackend } from "../pi-backend.js";

@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { parseAwf2Workflow, awf2ToGraph } from "./awf2-loader.js";
+import { parseWorkflowDefinition, workflowToGraph } from "./awf2-loader.js";
 
-describe("AWF2 loader", () => {
-  it("parses + validates + lowers AWF2 to Graph", () => {
+describe("Workflow loader", () => {
+  it("parses + validates + lowers Workflow to Graph", () => {
     const source = `
       workflow "demo" {
         version 2
@@ -22,8 +22,8 @@ describe("AWF2 loader", () => {
       }
     `;
 
-    const awf2 = parseAwf2Workflow(source);
-    const graph = awf2ToGraph(awf2);
+    const workflow = parseWorkflowDefinition(source);
+    const graph = workflowToGraph(workflow);
 
     expect(graph.name).toBe("demo");
     expect(graph.nodes.some((n) => n.id === "__start__" && n.attrs.shape === "Mdiamond")).toBe(true);

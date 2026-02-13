@@ -14,7 +14,7 @@ const registeredCommands = new Map<string, { handler: Function; description?: st
 let runPipelineImpl: ((config: any) => Promise<any>) | undefined;
 
 vi.mock("../pipeline/index.js", () => {
-  const parseDot = vi.fn(() => ({
+  const graph = {
     name: "TestPipeline",
     attrs: { goal: "test goal" },
     nodes: [
@@ -28,14 +28,13 @@ vi.mock("../pipeline/index.js", () => {
     ],
     node_defaults: {},
     edge_defaults: {},
-  }));
+  };
   return {
-    parseDot,
-    validate: vi.fn(() => []),
-    validateOrRaise: vi.fn(),
+    parseWorkflowKdl: vi.fn(() => ({ version: 2, name: "wf", start: "start", stages: [] })),
+    workflowToGraph: vi.fn(() => graph),
+    validateWorkflow: vi.fn(() => []),
     runPipeline: vi.fn(async (config: any) => {
       if (runPipelineImpl) return runPipelineImpl(config);
-      // Simulate minimal pipeline lifecycle
       const events: PipelineEvent[] = [
         { kind: "pipeline_started", timestamp: new Date().toISOString(), data: { name: "TestPipeline" } },
         { kind: "stage_started", timestamp: new Date().toISOString(), data: { name: "work" } },
@@ -159,8 +158,8 @@ describe("attractor extension", () => {
     registeredCommands.clear();
     runPipelineImpl = undefined;
     tempDir = await mkdtemp(join(tmpdir(), "attractor-ext-test-"));
-    dotFile = join(tempDir, "test.dot");
-    await writeFile(dotFile, 'digraph Test { start [shape=Mdiamond]; exit [shape=Msquare]; start -> exit }');
+    dotFile = join(tempDir, "test.awf.kdl");
+    await writeFile(dotFile, 'workflow "x" { version 2 start "exit" stage "exit" kind="exit" }');
   });
 
   afterEach(async () => {
@@ -188,7 +187,7 @@ describe("attractor extension", () => {
     const ctx = makeCtx(tempDir);
     (ctx as any).hasUI = false;
     const handler = registeredCommands.get("attractor")!.handler;
-    await handler("run test.dot", ctx);
+    await handler("run test.awf.kdl", ctx);
     expect(ctx.ui.notify).toHaveBeenCalledWith(
       expect.stringContaining("interactive mode"),
       "error",
@@ -200,7 +199,7 @@ describe("attractor extension", () => {
     attractorExtension(pi);
     const ctx = makeCtx(tempDir);
     const handler = registeredCommands.get("attractor")!.handler;
-    await handler("deploy test.dot", ctx);
+    await handler("deploy test.awf.kdl", ctx);
     expect(ctx.ui.notify).toHaveBeenCalledWith(
       expect.stringContaining("Unknown subcommand"),
       "error",
@@ -252,7 +251,7 @@ describe("attractor extension", () => {
       attractorExtension(pi);
       const ctx = makeCtx(tempDir);
       const handler = registeredCommands.get("attractor")!.handler;
-      await handler("run nonexistent.dot", ctx);
+      await handler("run nonexistent.awf.kdl", ctx);
       expect(ctx.ui.notify).toHaveBeenCalledWith(
         expect.stringContaining("not found"),
         "error",

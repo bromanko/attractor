@@ -1,6 +1,6 @@
 # Attractor
 
-A DOT-based pipeline runner that uses directed graphs (defined in Graphviz DOT syntax) to orchestrate multi-stage AI workflows. Each node in the graph is an AI task and edges define the flow between them.
+A KDL-based workflow runner that orchestrates multi-stage AI workflows. Each stage is an AI/tool/human task and transitions define execution flow.
 
 Built from the [StrongDM Software Factory](https://factory.strongdm.ai/) NLSpecs:
 
@@ -14,7 +14,7 @@ Three layers, built bottom-up:
 
 ```
 ┌─────────────────────────────────────────┐
-│  Attractor Pipeline Engine              │  DOT parser, execution engine,
+│  Attractor Pipeline Engine              │  KDL parser, execution engine,
 │  (src/pipeline/)                        │  handlers, conditions, stylesheet
 ├─────────────────────────────────────────┤
 │  Coding Agent Loop                      │  Session, provider profiles,
@@ -27,9 +27,9 @@ Three layers, built bottom-up:
 
 ## Quick Start
 
-### Define a pipeline in DOT syntax
+### Define a workflow in KDL syntax
 
-```dot
+```kdl
 digraph FeaturePipeline {
     graph [goal="Implement and validate a feature"]
     node [shape=box, timeout="900s"]
@@ -50,12 +50,12 @@ digraph FeaturePipeline {
 ### Run the pipeline
 
 ```ts
-import { parseAwf2Kdl, awf2ToGraph, validateOrRaise, runPipeline } from "attractor";
+import { parseWorkflowKdl, workflowToGraph, validateWorkflowOrRaise, runPipeline } from "attractor";
 
 const kdl = fs.readFileSync("pipeline.awf.kdl", "utf-8");
-const awf2 = parseAwf2Kdl(kdl);
-const graph = awf2ToGraph(awf2);
-validateOrRaise(graph);
+const workflow = parseWorkflowKdl(kdl);
+validateWorkflowOrRaise(workflow);
+const graph = workflowToGraph(workflow);
 
 const result = await runPipeline({
   graph,
@@ -67,10 +67,10 @@ const result = await runPipeline({
 
 ## Pipeline Engine Features
 
-### DOT Parsing (Section 2)
-- Full subset of Graphviz DOT: digraph, node/edge attributes, subgraphs
-- Chained edges (`A -> B -> C`), node/edge defaults, comments
-- Typed attributes: strings, integers, floats, booleans, durations
+### KDL Workflow Parsing
+- Native `.awf.kdl` workflow format
+- Explicit stage kinds and transition semantics
+- Typed attributes with strict validation
 
 ### Node Handlers (Section 4)
 | Shape | Handler | Description |
@@ -86,7 +86,7 @@ const result = await runPipeline({
 5-step deterministic priority: condition match → preferred label → suggested IDs → weight → lexical tiebreak
 
 ### Condition Expressions (Section 10)
-```dot
+```kdl
 gate -> exit      [condition="outcome=success"]
 gate -> fix       [condition="outcome=fail"]
 gate -> deploy    [condition="outcome=success && context.tests_passed=true"]
@@ -97,7 +97,7 @@ Nodes with `goal_gate=true` must succeed before the pipeline can exit.
 
 ### Model Stylesheet (Section 8)
 CSS-like rules for per-node LLM configuration:
-```dot
+```kdl
 graph [model_stylesheet="
     * { llm_model: claude-sonnet-4-5; }
     .code { llm_model: claude-opus-4-6; }
@@ -164,7 +164,7 @@ src/
 │   └── local-env.ts        Local execution environment
 └── pipeline/               Attractor Pipeline Engine
     ├── types.ts            Graph model, context, handlers, interviewers
-    ├── dot-parser.ts       DOT subset parser
+    ├── awf2-kdl-parser.ts  KDL workflow parser
     ├── validator.ts        Lint rules (13 built-in)
     ├── conditions.ts       Edge condition expression language
     ├── engine.ts           Core execution loop, edge selection, checkpoints

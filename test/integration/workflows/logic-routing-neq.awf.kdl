@@ -1,0 +1,20 @@
+workflow "LogicRoutingNeq" {
+  version 2
+  goal "Test != operator and conjunction routing"
+  start "build"
+
+  stage "build" kind="llm" prompt="Build"
+
+  stage "gate" kind="decision" {
+    route when="outcome(\"build\") == \"success\" && output(\"build.risk\") != \"high\"" to="ship"
+    route when="true" to="fix"
+  }
+
+  stage "ship" kind="llm" prompt="Ship"
+  stage "fix" kind="llm" prompt="Fix"
+  stage "exit" kind="exit"
+
+  transition from="build" to="gate"
+  transition from="ship" to="exit"
+  transition from="fix" to="exit"
+}
