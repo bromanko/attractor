@@ -33,7 +33,7 @@ import type {
   ToolMode,
   WorkflowDefinition,
 } from "../pipeline/index.js";
-import { parseCommand, CommandParseError, usageText } from "./attractor-command.js";
+import { parseCommand, CommandParseError } from "./attractor-command.js";
 import type { ParsedRunCommand, ParsedValidateCommand, ParsedShowCommand, ShowFormat } from "./attractor-command.js";
 import { PiInterviewer } from "./attractor-interviewer.js";
 import { AttractorPanel, CUSTOM_MESSAGE_TYPE } from "./attractor-panel.js";
@@ -383,14 +383,7 @@ async function handleRun(
 
   // Cancellation
   const abortController = new AbortController();
-  const cancelCleanup = () => {
-    abortController.abort();
-  };
-
-  // Provide a way to cancel via keyboard — register a temporary shortcut
-  // (Note: we can't easily capture Ctrl+C in an extension command, so we
-  // rely on the abort controller and potential future pi cancellation APIs)
-
+  // TODO: wire abort to a pi cancellation API when available
   try {
     const result = await runPipeline({
       graph,

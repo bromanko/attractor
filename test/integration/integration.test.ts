@@ -15,9 +15,7 @@ import { parseWorkflowDefinition, workflowToGraph } from "../../src/pipeline/wor
 import { parseWorkflowKdl } from "../../src/pipeline/workflow-kdl-parser.js";
 import { validateWorkflow, validateWorkflowOrRaise } from "../../src/pipeline/workflow-validator.js";
 import { runPipeline } from "../../src/pipeline/engine.js";
-import { LlmBackend } from "../../src/pipeline/llm-backend.js";
-import { Client } from "../../src/llm/client.js";
-import type { ProviderAdapter, Request, Response, StreamEvent } from "../../src/llm/types.js";
+import { shouldParseStatusMarkers } from "../../src/pipeline/status-markers.js";
 import type {
   CodergenBackend,
   Outcome,
@@ -155,33 +153,43 @@ function mockJj(
   return runner as JjRunner & { calls: string[][] };
 }
 
-/** Mock LLM provider that returns per-node responses. */
-function mockLlmAdapter(responses: Record<string, string>, fallback = "Done."): ProviderAdapter {
+/**
+ * Build a mock CodergenBackend that returns text responses per node and
+ * parses status markers the same way the real backend does.
+ */
+function statusAwareBackend(
+  responses: Record<string, string>,
+  fallback = "Done.",
+): CodergenBackend {
   return {
-    name: "mock",
-    async complete(request: Request): Promise<Response> {
-      // Extract the node id from the prompt (all integration workflow prompts
-      // are unique enough to pattern-match, but we match on any key substring).
-      const promptText = request.messages
-        .flatMap((m) => m.content.filter((c) => c.kind === "text").map((c) => c.text))
-        .join(" ");
-      let text = fallback;
-      for (const [key, val] of Object.entries(responses)) {
-        if (promptText.includes(key)) {
-          text = val;
-          break;
-        }
+    async run(node: GraphNode): Promise<Outcome | string> {
+      const text = responses[node.id] ?? fallback;
+
+      if (!shouldParseStatusMarkers(node)) {
+        return text;
       }
-      return {
-        id: "resp_01",
-        model: request.model,
-        provider: "mock",
-        message: { role: "assistant", content: [{ kind: "text", text }] },
-        finish_reason: { reason: "stop" },
-        usage: { input_tokens: 10, output_tokens: 20, total_tokens: 30 },
+
+      // Parse status markers for auto_status nodes
+      const outcome: Outcome = {
+        status: "success",
+        notes: text.slice(0, 500),
+        context_updates: { [`${node.id}.response`]: text.slice(0, 2000) },
       };
+
+      const statusMatch = text.match(/\[STATUS:\s*(success|fail|partial_success|retry)\]/i);
+      if (statusMatch) {
+        outcome.status = statusMatch[1].toLowerCase() as Outcome["status"];
+      }
+
+      const failMatch = text.match(/\[FAILURE_REASON:\s*(.+?)\]/i);
+      if (failMatch) {
+        outcome.failure_reason = failMatch[1].trim();
+      } else if (outcome.status === "fail") {
+        outcome.failure_reason = text.slice(0, 200);
+      }
+
+      return outcome;
     },
-    async *stream(): AsyncIterable<StreamEvent> {},
   };
 }
 
@@ -898,11 +906,9 @@ describe("auto_status parsing end-to-end", () => {
     const reviewNode = graph.nodes.find((n) => n.id === "review")!;
     expect(reviewNode.attrs.auto_status).toBe(true);
 
-    const adapter = mockLlmAdapter({
-      Review: "Looks bad.\n[STATUS: fail]\n[FAILURE_REASON: Missing error handling]",
+    const backend = statusAwareBackend({
+      review: "Looks bad.\n[STATUS: fail]\n[FAILURE_REASON: Missing error handling]",
     });
-    const client = new Client({ providers: { mock: adapter } });
-    const backend = new LlmBackend({ client, model: "test-model" });
 
     const result = await runPipeline({ graph, logsRoot: logs, backend });
 
@@ -923,12 +929,10 @@ describe("auto_status parsing end-to-end", () => {
     const implNode = graph.nodes.find((n) => n.id === "implement")!;
     expect(implNode.attrs.auto_status).toBeUndefined();
 
-    const adapter = mockLlmAdapter({
-      "Write the code": "Here is the code.\n[STATUS: fail]\n[FAILURE_REASON: Oops]",
-      Review: "All good.\n[STATUS: success]",
+    const backend = statusAwareBackend({
+      implement: "Here is the code.\n[STATUS: fail]\n[FAILURE_REASON: Oops]",
+      review: "All good.\n[STATUS: success]",
     });
-    const client = new Client({ providers: { mock: adapter } });
-    const backend = new LlmBackend({ client, model: "test-model" });
 
     const result = await runPipeline({ graph, logsRoot: logs, backend });
 

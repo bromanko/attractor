@@ -45,8 +45,6 @@ import {
   renderResumeInfo,
   renderMarkdown,
   renderFailureSummary,
-  renderUsageSummary,
-  formatCost,
   Spinner,
   formatDuration,
 } from "./cli-renderer.js";
