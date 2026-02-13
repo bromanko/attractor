@@ -1,0 +1,29 @@
+workflow "HumanGate" {
+  version 2
+  goal "Test human gate interaction in the attractor panel"
+  start "gather_info"
+
+  stage "gather_info" kind="tool" command="bash -lc 'echo \"System: $(uname -s)\"; echo \"User: $(whoami)\"; echo \"Dir: $(pwd)\"; echo \"Files: $(ls | wc -l) items\"'"
+
+  stage "human_gate" kind="human" {
+    prompt "Review the gathered info. Choose what to do next."
+    option "t" label="[T] Run tests" to="run_tests"
+    option "d" label="[D] Show details" to="show_details"
+    option "q" label="[Q] Quit" to="exit"
+  }
+
+  stage "run_tests" kind="tool" command="bash -lc 'echo \"Running quick test suite...\"; sleep 1; echo \"All 3 checks passed\"'"
+  stage "show_details" kind="tool" command="bash -lc 'echo \"=== Detailed System Info ===\"; echo \"Hostname: $(hostname)\"; echo \"Shell: $SHELL\"; echo \"Node: $(node --version 2>/dev/null || echo N/A)\"; echo \"Uptime: $(uptime)\"'"
+
+  stage "confirm_done" kind="human" {
+    prompt "Everything look good?"
+    option "y" label="[Y] Yes, finish" to="exit"
+    option "n" label="[N] No, go back" to="human_gate"
+  }
+
+  stage "exit" kind="exit"
+
+  transition from="gather_info" to="human_gate"
+  transition from="run_tests" to="confirm_done"
+  transition from="show_details" to="confirm_done"
+}

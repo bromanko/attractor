@@ -1,6 +1,6 @@
 # Attractor Pi Extension
 
-Run and validate Attractor DOT-based AI pipelines directly inside [pi](https://github.com/badlogic/pi-mono), the CLI coding agent.
+Run and validate Attractor KDL-based AI workflows directly inside [pi](https://github.com/badlogic/pi-mono), the CLI coding agent.
 
 ## Install
 
@@ -30,7 +30,7 @@ Execute a pipeline with interactive human gates and a rich TUI progress panel.
 
 | Argument | Description |
 |----------|-------------|
-| `<workflow>` | Path to `.dot` file, or bare name resolved from `.attractor/workflows/` |
+| `<workflow>` | Path to `.awf.kdl` file, or bare name resolved from `.attractor/workflows/` |
 | `--goal <text>` | Pipeline goal (overrides graph's `goal` attribute) |
 | `--resume` | Resume from last checkpoint (`<logs>/checkpoint.json`) |
 | `--approve-all` | Auto-approve all human gates (no interactive prompts) |
@@ -42,7 +42,7 @@ Execute a pipeline with interactive human gates and a rich TUI progress panel.
 
 ```
 /attractor run deploy --goal "Deploy v2.1 to staging"
-/attractor run ./pipelines/feature.dot --goal "Implement auth" --tools read-only
+/attractor run ./pipelines/feature.awf.kdl --goal "Implement auth" --tools read-only
 /attractor run deploy --resume
 /attractor run deploy --dry-run
 ```
@@ -59,14 +59,14 @@ Check a pipeline graph for errors without executing it.
 
 ```
 /attractor validate deploy
-/attractor validate ./pipelines/feature.dot
+/attractor validate ./pipelines/feature.awf.kdl
 ```
 
 ## Workflow Resolution
 
-When you provide a bare name (no path separator, no `.dot` extension), the extension looks for the workflow in:
+When you provide a bare name (no path separator, no extension), the extension looks for the workflow in:
 
-1. `.attractor/workflows/<name>.dot` in the current directory
+1. `.attractor/workflows/<name>.awf.kdl` in the current directory
 
 When you provide a path (relative or absolute), it's used directly.
 

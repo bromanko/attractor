@@ -1,0 +1,20 @@
+workflow "ToolNode" {
+  version 2
+  goal "Test tool execution"
+  start "setup"
+
+  stage "setup" kind="llm" prompt="Prepare environment"
+  stage "check" kind="tool" command="echo TESTS_PASSED"
+
+  stage "gate" kind="decision" {
+    route when="outcome(\"check\") == \"success\"" to="report"
+    route when="true" to="exit"
+  }
+
+  stage "report" kind="llm" prompt="Generate report"
+  stage "exit" kind="exit"
+
+  transition from="setup" to="check"
+  transition from="check" to="gate"
+  transition from="report" to="exit"
+}

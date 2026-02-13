@@ -1,0 +1,12 @@
+workflow "GoalGate" {
+  version 2
+  goal "Test goal gate enforcement"
+  start "critical"
+
+  stage "critical" kind="llm" prompt="Must succeed" goal_gate=true
+  stage "optional" kind="llm" prompt="Nice to have"
+  stage "exit" kind="exit"
+
+  transition from="critical" to="optional"
+  transition from="optional" to="exit"
+}

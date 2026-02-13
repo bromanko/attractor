@@ -50,10 +50,11 @@ digraph FeaturePipeline {
 ### Run the pipeline
 
 ```ts
-import { parseDot, validateOrRaise, runPipeline } from "attractor";
+import { parseAwf2Kdl, awf2ToGraph, validateOrRaise, runPipeline } from "attractor";
 
-const dot = fs.readFileSync("pipeline.dot", "utf-8");
-const graph = parseDot(dot);
+const kdl = fs.readFileSync("pipeline.awf.kdl", "utf-8");
+const awf2 = parseAwf2Kdl(kdl);
+const graph = awf2ToGraph(awf2);
 validateOrRaise(graph);
 
 const result = await runPipeline({

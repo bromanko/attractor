@@ -78,7 +78,7 @@ export default function attractorExtension(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("attractor", {
-    description: "Run or validate Attractor DOT pipelines",
+    description: "Run or validate Attractor workflows (.awf.kdl)",
 
     getArgumentCompletions: (prefix: string) => {
       const subcommands = [

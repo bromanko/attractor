@@ -1,0 +1,12 @@
+workflow "AutoStatus" {
+  version 2
+  goal "Test auto_status from AWF2"
+  start "implement"
+
+  stage "implement" kind="llm" prompt="Write the code for: $goal"
+  stage "review" kind="llm" prompt="Review the implementation" auto_status=true
+  stage "exit" kind="exit"
+
+  transition from="implement" to="review"
+  transition from="review" to="exit"
+}

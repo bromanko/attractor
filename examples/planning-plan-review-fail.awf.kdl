@@ -1,0 +1,22 @@
+workflow "PlanningPlanReviewFail" {
+  version 2
+  goal "Exercise failed LLM review handling"
+  start "plan"
+
+  stage "plan" kind="llm" prompt="Write a short implementation plan for: $goal"
+
+  stage "plan_review" kind="llm" auto_status=true prompt="You are simulating a failed planning review for test purposes.\nReturn exactly:\n[STATUS: fail]\n[FAILURE_REASON: Intentional plan_review failure for structured error reporting test.]"
+
+  stage "human_review" kind="human" {
+    prompt "Approve or revise"
+    option "accept" label="Accept" to="exit"
+    option "revise" label="Revise" to="plan_revise"
+  }
+
+  stage "plan_revise" kind="llm" prompt="Revise the plan"
+  stage "exit" kind="exit"
+
+  transition from="plan" to="plan_review"
+  transition from="plan_review" to="human_review"
+  transition from="plan_revise" to="human_review"
+}

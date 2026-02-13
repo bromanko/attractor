@@ -1,0 +1,26 @@
+workflow "RetryLoop" {
+  version 2
+  goal "Test retry and fix loop"
+  start "implement"
+
+  stage "implement" kind="llm" prompt="Write code" {
+    retry max_attempts=3 backoff="exponential"
+  }
+
+  stage "ci" kind="tool" command="echo ok"
+
+  stage "gate" kind="decision" {
+    route when="outcome(\"ci\") == \"success\"" to="exit"
+    route when="true" to="fix"
+  }
+
+  stage "fix" kind="llm" prompt="Fix issues" {
+    retry max_attempts=2 backoff="exponential"
+  }
+
+  stage "exit" kind="exit"
+
+  transition from="implement" to="ci"
+  transition from="ci" to="gate"
+  transition from="fix" to="ci"
+}

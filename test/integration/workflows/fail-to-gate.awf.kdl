@@ -1,0 +1,20 @@
+workflow "FailToGate" {
+  version 2
+  goal "Test failure forwarding to gate"
+  start "review"
+
+  stage "review" kind="llm" prompt="Review code"
+
+  stage "gate" kind="decision" {
+    route when="outcome(\"review\") == \"success\"" to="ok"
+    route when="true" to="revise"
+  }
+
+  stage "ok" kind="llm" prompt="Ship it"
+  stage "revise" kind="llm" prompt="Revise code"
+  stage "exit" kind="exit"
+
+  transition from="review" to="gate"
+  transition from="ok" to="exit"
+  transition from="revise" to="exit"
+}

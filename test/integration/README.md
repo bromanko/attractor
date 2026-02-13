@@ -17,16 +17,16 @@ tool execution, checkpointing, and CLI surface.
 
 | Workflow | What it covers |
 |---|---|
-| `linear.dot` | Minimal start → work → exit |
-| `branching.dot` | Diamond gate with success/fail paths |
-| `retry-loop.dot` | max_retries + fix loop back to CI |
-| `human-gate.dot` | Hexagon node with multiple choices |
-| `tool-node.dot` | Parallelogram running a shell command |
-| `goal-gate.dot` | goal_gate=true blocking exit |
-| `multi-review.dot` | Serial review chain with early-exit on failure |
-| `variable-expansion.dot` | $goal substitution in prompts |
-| `weighted-edges.dot` | Edge weight tiebreaking |
-| `checkpoint-resume.dot` | Run, checkpoint, resume |
-| `fail-halts.dot` | Non-routing failure stops pipeline |
-| `fail-to-gate.dot` | Failure forwarded through unconditional edge to gate |
-| `large-pipeline.dot` | 15+ node stress test |
+| `linear.awf.kdl` | Minimal start → work → exit |
+| `branching.awf.kdl` | Decision gate with success/fail paths |
+| `retry-loop.awf.kdl` | retry + fix loop back to CI |
+| `human-gate.awf.kdl` | Human stage with multiple choices |
+| `tool-node.awf.kdl` | Tool stage running a shell command |
+| `goal-gate.awf.kdl` | goal_gate=true blocking exit |
+| `multi-review.awf.kdl` | Serial review chain with early-exit on failure |
+| `variable-expansion.awf.kdl` | $goal substitution in prompts |
+| `weighted-edges.awf.kdl` | Transition priority selection |
+| `checkpoint-resume.awf.kdl` | Run, checkpoint, resume |
+| `fail-halts.awf.kdl` | Non-routing failure stops pipeline |
+| `fail-to-gate.awf.kdl` | Failure forwarded through decision gate |
+| `large-pipeline.awf.kdl` | 15+ node stress test |

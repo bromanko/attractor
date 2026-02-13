@@ -1,0 +1,7 @@
+workflow "InvalidNoExit" {
+  version 2
+  goal "Should fail validation"
+  start "work"
+
+  stage "work" kind="llm" prompt="Work"
+}

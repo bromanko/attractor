@@ -1,0 +1,20 @@
+workflow "Branching" {
+  version 2
+  goal "Test conditional branching"
+  start "build"
+
+  stage "build" kind="llm" prompt="Build the project"
+
+  stage "gate" kind="decision" {
+    route when="outcome(\"build\") == \"success\"" to="deploy"
+    route when="true" to="fix"
+  }
+
+  stage "deploy" kind="llm" prompt="Deploy to prod"
+  stage "fix" kind="llm" prompt="Fix build errors"
+  stage "exit" kind="exit"
+
+  transition from="build" to="gate"
+  transition from="deploy" to="exit"
+  transition from="fix" to="exit"
+}

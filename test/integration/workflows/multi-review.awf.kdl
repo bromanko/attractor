@@ -1,0 +1,26 @@
+workflow "MultiReview" {
+  version 2
+  goal "Test serial review chain"
+  start "code"
+
+  stage "code" kind="llm" prompt="Write code"
+  stage "rev1" kind="llm" prompt="Review: code quality"
+  stage "rev2" kind="llm" prompt="Review: security"
+  stage "rev3" kind="llm" prompt="Review: performance"
+
+  stage "gate" kind="decision" {
+    route when="outcome(\"rev1\") != \"success\" || outcome(\"rev2\") != \"success\" || outcome(\"rev3\") != \"success\"" to="fix"
+    route when="true" to="exit"
+  }
+
+  stage "fix" kind="llm" prompt="Fix review findings"
+  stage "exit" kind="exit"
+
+  transition from="code" to="rev1"
+  transition from="rev1" to="rev2" when="outcome(\"rev1\") == \"success\""
+  transition from="rev1" to="gate" when="outcome(\"rev1\") != \"success\""
+  transition from="rev2" to="rev3" when="outcome(\"rev2\") == \"success\""
+  transition from="rev2" to="gate" when="outcome(\"rev2\") != \"success\""
+  transition from="rev3" to="gate"
+  transition from="fix" to="rev1"
+}

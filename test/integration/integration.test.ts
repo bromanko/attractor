@@ -13,9 +13,10 @@ import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { parseDot } from "../../src/pipeline/dot-parser.js";
 import { parseAwf2Workflow, awf2ToGraph } from "../../src/pipeline/awf2-loader.js";
-import { validate, validateOrRaise } from "../../src/pipeline/validator.js";
+import { parseAwf2Kdl } from "../../src/pipeline/awf2-kdl-parser.js";
+import { validateAwf2, validateAwf2OrRaise } from "../../src/pipeline/awf2-validator.js";
+import { validate } from "../../src/pipeline/validator.js";
 import { runPipeline } from "../../src/pipeline/engine.js";
-import { applyStylesheet } from "../../src/pipeline/stylesheet.js";
 import { LlmBackend } from "../../src/pipeline/llm-backend.js";
 import { Client } from "../../src/llm/client.js";
 import type { ProviderAdapter, Request, Response, StreamEvent } from "../../src/llm/types.js";
@@ -39,14 +40,23 @@ import type { JjRunner } from "../../src/pipeline/workspace.js";
 const WORKFLOWS = join(import.meta.dirname, "workflows");
 
 async function loadWorkflow(name: string) {
-  const dot = await readFile(join(WORKFLOWS, name), "utf-8");
-  return parseDot(dot);
+  const source = await readFile(join(WORKFLOWS, name), "utf-8");
+  if (name.endsWith(".awf.kdl")) {
+    const awf2 = parseAwf2Workflow(source);
+    return awf2ToGraph(awf2);
+  }
+  return parseDot(source);
 }
 
 async function loadAwf2Workflow(name: string) {
   const source = await readFile(join(WORKFLOWS, name), "utf-8");
   const awf2 = parseAwf2Workflow(source);
   return awf2ToGraph(awf2);
+}
+
+async function loadAwf2Definition(name: string) {
+  const source = await readFile(join(WORKFLOWS, name), "utf-8");
+  return parseAwf2Kdl(source);
 }
 
 let suiteTempRootPromise: Promise<string> | undefined;
@@ -192,16 +202,16 @@ function mockLlmAdapter(responses: Record<string, string>, fallback = "Done."): 
 
 describe("Linear pipeline", () => {
   it("traverses start → work → exit", async () => {
-    const graph = await loadWorkflow("linear.dot");
+    const graph = await loadWorkflow("linear.awf.kdl");
     const logs = await tempDir();
     const result = await runPipeline({ graph, logsRoot: logs, backend: successBackend });
 
     expect(result.status).toBe("success");
-    expect(result.completedNodes).toEqual(["start", "work", "exit"]);
+    expect(result.completedNodes).toEqual(["__start__", "work", "exit"]);
   });
 
   it("writes prompt and response artifacts", async () => {
-    const graph = await loadWorkflow("linear.dot");
+    const graph = await loadWorkflow("linear.awf.kdl");
     const logs = await tempDir();
     await runPipeline({ graph, logsRoot: logs, backend: successBackend });
 
@@ -216,7 +226,7 @@ describe("Linear pipeline", () => {
   });
 
   it("writes checkpoint.json after each node", async () => {
-    const graph = await loadWorkflow("linear.dot");
+    const graph = await loadWorkflow("linear.awf.kdl");
     const logs = await tempDir();
     await runPipeline({ graph, logsRoot: logs, backend: successBackend });
 
@@ -235,7 +245,7 @@ describe("Linear pipeline", () => {
 
 describe("Conditional branching", () => {
   it("takes success path when build succeeds", async () => {
-    const graph = await loadWorkflow("branching.dot");
+    const graph = await loadWorkflow("branching.awf.kdl");
     const logs = await tempDir();
     const result = await runPipeline({ graph, logsRoot: logs, backend: successBackend });
 
@@ -248,7 +258,7 @@ describe("Conditional branching", () => {
     const backend = nodeOutcomeBackend({
       build: { status: "fail", failure_reason: "compile error" },
     });
-    const graph = await loadWorkflow("branching.dot");
+    const graph = await loadWorkflow("branching.awf.kdl");
     const logs = await tempDir();
     const result = await runPipeline({ graph, logsRoot: logs, backend });
 
@@ -264,7 +274,7 @@ describe("Conditional branching", () => {
 
 describe("Retry and fix loop", () => {
   it("completes when all stages succeed", async () => {
-    const graph = await loadWorkflow("retry-loop.dot");
+    const graph = await loadWorkflow("retry-loop.awf.kdl");
     const logs = await tempDir();
     const result = await runPipeline({ graph, logsRoot: logs, backend: successBackend });
 
@@ -285,7 +295,7 @@ describe("Retry and fix loop", () => {
       },
     };
 
-    const graph = await loadWorkflow("retry-loop.dot");
+    const graph = await loadWorkflow("retry-loop.awf.kdl");
     const logs = await tempDir();
     const result = await runPipeline({ graph, logsRoot: logs, backend });
 
@@ -301,7 +311,7 @@ describe("Retry and fix loop", () => {
 
 describe("Human gate", () => {
   it("follows approve path with approve interviewer", async () => {
-    const graph = await loadWorkflow("human-gate.dot");
+    const graph = await loadWorkflow("human-gate.awf.kdl");
     const logs = await tempDir();
     const result = await runPipeline({
       graph,
@@ -329,7 +339,7 @@ describe("Human gate", () => {
       },
     };
 
-    const graph = await loadWorkflow("human-gate.dot");
+    const graph = await loadWorkflow("human-gate.awf.kdl");
     const logs = await tempDir();
     const result = await runPipeline({
       graph,
@@ -350,7 +360,7 @@ describe("Human gate", () => {
 
 describe("Tool node", () => {
   it("executes shell command and captures output", async () => {
-    const graph = await loadWorkflow("tool-node.dot");
+    const graph = await loadWorkflow("tool-node.awf.kdl");
     const logs = await tempDir();
     const { events, onEvent } = eventCollector();
     const result = await runPipeline({
@@ -367,7 +377,7 @@ describe("Tool node", () => {
 
   it("tool failure routes through gate to exit", async () => {
     // Modify the graph to use a command that fails
-    const graph = await loadWorkflow("tool-node.dot");
+    const graph = await loadWorkflow("tool-node.awf.kdl");
     const checkNode = graph.nodes.find((n) => n.id === "check")!;
     checkNode.attrs.tool_command = "false";  // exit code 1
 
@@ -391,7 +401,7 @@ describe("Tool node", () => {
 
 describe("Goal gate", () => {
   it("passes when goal-gated node succeeds", async () => {
-    const graph = await loadWorkflow("goal-gate.dot");
+    const graph = await loadWorkflow("goal-gate.awf.kdl");
     const logs = await tempDir();
     const result = await runPipeline({ graph, logsRoot: logs, backend: successBackend });
 
@@ -402,7 +412,7 @@ describe("Goal gate", () => {
     const backend = nodeOutcomeBackend({
       critical: { status: "fail", failure_reason: "critical task failed" },
     });
-    const graph = await loadWorkflow("goal-gate.dot");
+    const graph = await loadWorkflow("goal-gate.awf.kdl");
     const logs = await tempDir();
     const result = await runPipeline({ graph, logsRoot: logs, backend });
 
@@ -416,7 +426,7 @@ describe("Goal gate", () => {
 
 describe("Multi-review chain", () => {
   it("passes all reviews → exits successfully", async () => {
-    const graph = await loadWorkflow("multi-review.dot");
+    const graph = await loadWorkflow("multi-review.awf.kdl");
     const logs = await tempDir();
     const result = await runPipeline({ graph, logsRoot: logs, backend: successBackend });
 
@@ -439,7 +449,7 @@ describe("Multi-review chain", () => {
         return `Done: ${node.id}`;
       },
     };
-    const graph = await loadWorkflow("multi-review.dot");
+    const graph = await loadWorkflow("multi-review.awf.kdl");
     const logs = await tempDir();
     const result = await runPipeline({ graph, logsRoot: logs, backend });
 
@@ -461,7 +471,7 @@ describe("Multi-review chain", () => {
         return `Done: ${node.id}`;
       },
     };
-    const graph = await loadWorkflow("multi-review.dot");
+    const graph = await loadWorkflow("multi-review.awf.kdl");
     const logs = await tempDir();
     const result = await runPipeline({ graph, logsRoot: logs, backend });
 
@@ -480,7 +490,7 @@ describe("Multi-review chain", () => {
 describe("Variable expansion", () => {
   it("expands $goal in prompts", async () => {
     const { backend, prompts } = promptCapture();
-    const graph = await loadWorkflow("variable-expansion.dot");
+    const graph = await loadWorkflow("variable-expansion.awf.kdl");
     const logs = await tempDir();
     await runPipeline({ graph, logsRoot: logs, backend });
 
@@ -490,7 +500,7 @@ describe("Variable expansion", () => {
 
   it("expands --goal override", async () => {
     const { backend, prompts } = promptCapture();
-    const graph = await loadWorkflow("variable-expansion.dot");
+    const graph = await loadWorkflow("variable-expansion.awf.kdl");
     graph.attrs.goal = "Custom goal override";
     const logs = await tempDir();
     await runPipeline({ graph, logsRoot: logs, backend });
@@ -505,7 +515,7 @@ describe("Variable expansion", () => {
 
 describe("Edge weight selection", () => {
   it("follows higher-weighted unconditional edge", async () => {
-    const graph = await loadWorkflow("weighted-edges.dot");
+    const graph = await loadWorkflow("weighted-edges.awf.kdl");
     const logs = await tempDir();
     const result = await runPipeline({ graph, logsRoot: logs, backend: successBackend });
 
@@ -520,7 +530,7 @@ describe("Edge weight selection", () => {
 
 describe("Checkpoint and resume", () => {
   it("resumes from a saved checkpoint", async () => {
-    const graph = await loadWorkflow("checkpoint-resume.dot");
+    const graph = await loadWorkflow("checkpoint-resume.awf.kdl");
 
     // First run: complete all
     const logs1 = await tempDir();
@@ -548,7 +558,7 @@ describe("Checkpoint and resume", () => {
   });
 
   it("restores context from checkpoint", async () => {
-    const graph = await loadWorkflow("checkpoint-resume.dot");
+    const graph = await loadWorkflow("checkpoint-resume.awf.kdl");
     const logs1 = await tempDir();
     await runPipeline({ graph, logsRoot: logs1, backend: successBackend });
 
@@ -586,7 +596,7 @@ describe("Failure halts pipeline", () => {
     const backend = nodeOutcomeBackend({
       setup: { status: "fail", failure_reason: "setup exploded" },
     });
-    const graph = await loadWorkflow("fail-halts.dot");
+    const graph = await loadWorkflow("fail-halts.awf.kdl");
     const logs = await tempDir();
     const { events, onEvent } = eventCollector();
     const result = await runPipeline({
@@ -613,7 +623,7 @@ describe("Failure forwarded through gate", () => {
     const backend = nodeOutcomeBackend({
       review: { status: "fail", failure_reason: "needs work" },
     });
-    const graph = await loadWorkflow("fail-to-gate.dot");
+    const graph = await loadWorkflow("fail-to-gate.awf.kdl");
     const logs = await tempDir();
     const result = await runPipeline({ graph, logsRoot: logs, backend });
 
@@ -631,7 +641,7 @@ describe("Failure forwarded through gate", () => {
 
 describe("Large pipeline", () => {
   it("traverses 15+ node pipeline end-to-end", async () => {
-    const graph = await loadWorkflow("large-pipeline.dot");
+    const graph = await loadWorkflow("large-pipeline.awf.kdl");
     const logs = await tempDir();
     const result = await runPipeline({ graph, logsRoot: logs, backend: successBackend });
 
@@ -642,7 +652,7 @@ describe("Large pipeline", () => {
   });
 
   it("validates without errors", async () => {
-    const graph = await loadWorkflow("large-pipeline.dot");
+    const graph = await loadWorkflow("large-pipeline.awf.kdl");
     const diagnostics = validate(graph);
     const errors = diagnostics.filter((d) => d.severity === "error");
     expect(errors).toHaveLength(0);
@@ -664,7 +674,7 @@ describe("Workspace lifecycle", () => {
       "workspace forget": "",
     });
 
-    const graph = await loadWorkflow("workspace-lifecycle.dot");
+    const graph = await loadWorkflow("workspace-lifecycle.awf.kdl");
     const logs = await tempDir();
     const result = await runPipeline({
       graph,
@@ -691,97 +701,67 @@ describe("Workspace lifecycle", () => {
 // ===========================================================================
 
 describe("Validation", () => {
-  it("rejects workflow with no start node", async () => {
-    const graph = await loadWorkflow("invalid-no-start.dot");
-    const diagnostics = validate(graph);
+  it("rejects workflow with missing start target", async () => {
+    const wf = await loadAwf2Definition("invalid-no-start.awf.kdl");
+    const diagnostics = validateAwf2(wf);
     const errors = diagnostics.filter((d) => d.severity === "error");
 
     expect(errors.length).toBeGreaterThan(0);
-    expect(errors.some((d) => d.rule === "start_node")).toBe(true);
+    expect(errors.some((d) => d.rule === "awf2_start_exists")).toBe(true);
   });
 
   it("rejects workflow with no exit node", async () => {
-    const graph = await loadWorkflow("invalid-no-exit.dot");
-    const diagnostics = validate(graph);
+    const wf = await loadAwf2Definition("invalid-no-exit.awf.kdl");
+    const diagnostics = validateAwf2(wf);
     const errors = diagnostics.filter((d) => d.severity === "error");
 
     expect(errors.length).toBeGreaterThan(0);
-    expect(errors.some((d) => d.rule === "terminal_node")).toBe(true);
+    expect(errors.some((d) => d.rule === "awf2_reachable_exit")).toBe(true);
   });
 
-  it("flags unreachable nodes", async () => {
-    const graph = await loadWorkflow("invalid-unreachable.dot");
-    const diagnostics = validate(graph);
+  it("flags unreachable stages", async () => {
+    const wf = await loadAwf2Definition("invalid-unreachable.awf.kdl");
+    const diagnostics = validateAwf2(wf);
 
-    expect(diagnostics.some((d) => d.rule === "reachability")).toBe(true);
+    expect(diagnostics.some((d) => d.rule === "awf2_reachability")).toBe(true);
   });
 
-  it("throws on validateOrRaise for invalid graphs", async () => {
-    const graph = await loadWorkflow("invalid-no-start.dot");
-    expect(() => validateOrRaise(graph)).toThrow(/validation failed/i);
+  it("throws on validateAwf2OrRaise for invalid workflows", async () => {
+    const wf = await loadAwf2Definition("invalid-no-start.awf.kdl");
+    expect(() => validateAwf2OrRaise(wf)).toThrow(/AWF2 validation failed/i);
   });
 
   it("validates all valid workflow files without errors", async () => {
     const validFiles = [
-      "linear.dot",
-      "branching.dot",
-      "retry-loop.dot",
-      "human-gate.dot",
-      "tool-node.dot",
-      "goal-gate.dot",
-      "multi-review.dot",
-      "variable-expansion.dot",
-      "weighted-edges.dot",
-      "checkpoint-resume.dot",
-      "fail-halts.dot",
-      "fail-to-gate.dot",
-      "large-pipeline.dot",
-      "workspace-lifecycle.dot",
-      "auto-status.dot",
+      "linear.awf.kdl",
+      "branching.awf.kdl",
+      "retry-loop.awf.kdl",
+      "human-gate.awf.kdl",
+      "tool-node.awf.kdl",
+      "goal-gate.awf.kdl",
+      "multi-review.awf.kdl",
+      "variable-expansion.awf.kdl",
+      "weighted-edges.awf.kdl",
+      "checkpoint-resume.awf.kdl",
+      "fail-halts.awf.kdl",
+      "fail-to-gate.awf.kdl",
+      "large-pipeline.awf.kdl",
+      "workspace-lifecycle.awf.kdl",
+      "auto-status.awf.kdl",
     ];
 
-    const graphs = await Promise.all(
+    const workflows = await Promise.all(
       validFiles.map(async (file) => ({
         file,
-        graph: await loadWorkflow(file),
+        wf: await loadAwf2Definition(file),
       })),
     );
 
-    for (const { file, graph } of graphs) {
-      const diagnostics = validate(graph);
+    for (const { file, wf } of workflows) {
+      const diagnostics = validateAwf2(wf);
       const errors = diagnostics.filter((d) => d.severity === "error");
       expect(errors, `${file} should have no validation errors`).toHaveLength(0);
     }
-  });
-});
-
-// ===========================================================================
-// 16. Model stylesheet
-// ===========================================================================
-
-describe("Model stylesheet", () => {
-  it("applies class and id selectors to node attrs", async () => {
-    const graph = await loadWorkflow("stylesheet.dot");
-    applyStylesheet(graph);
-
-    const plan = graph.nodes.find((n) => n.id === "plan")!;
-    const rev1 = graph.nodes.find((n) => n.id === "rev1")!;
-    const rev2 = graph.nodes.find((n) => n.id === "rev2")!;
-    const deploy = graph.nodes.find((n) => n.id === "deploy")!;
-
-    // * selector → default model
-    expect(plan.attrs.llm_model).toBe("default-model");
-    expect(plan.attrs.llm_provider).toBe("default-provider");
-
-    // .review class → review model
-    expect(rev1.attrs.llm_model).toBe("review-model");
-    expect(rev1.attrs.llm_provider).toBe("review-provider");
-    expect(rev2.attrs.llm_model).toBe("review-model");
-
-    // #deploy id → deploy model (higher specificity than *)
-    expect(deploy.attrs.llm_model).toBe("deploy-model");
-    // Provider not overridden by #deploy, falls back to * default
-    expect(deploy.attrs.llm_provider).toBe("default-provider");
   });
 });
 
@@ -791,7 +771,7 @@ describe("Model stylesheet", () => {
 
 describe("Event emission", () => {
   it("emits lifecycle events in correct order", async () => {
-    const graph = await loadWorkflow("linear.dot");
+    const graph = await loadWorkflow("linear.awf.kdl");
     const logs = await tempDir();
     const { events, onEvent } = eventCollector();
     await runPipeline({ graph, logsRoot: logs, backend: successBackend, onEvent });
@@ -808,7 +788,7 @@ describe("Event emission", () => {
     const backend = nodeOutcomeBackend({
       setup: { status: "fail", failure_reason: "boom" },
     });
-    const graph = await loadWorkflow("fail-halts.dot");
+    const graph = await loadWorkflow("fail-halts.awf.kdl");
     const logs = await tempDir();
     const { events, onEvent } = eventCollector();
     await runPipeline({ graph, logsRoot: logs, backend, onEvent });
@@ -818,7 +798,7 @@ describe("Event emission", () => {
   });
 
   it("emits pipeline_resumed when resuming from checkpoint", async () => {
-    const graph = await loadWorkflow("checkpoint-resume.dot");
+    const graph = await loadWorkflow("checkpoint-resume.awf.kdl");
     const logs1 = await tempDir();
     await runPipeline({ graph, logsRoot: logs1, backend: successBackend });
 
@@ -857,7 +837,7 @@ describe("Context flow", () => {
       },
     };
 
-    const graph = await loadWorkflow("checkpoint-resume.dot");
+    const graph = await loadWorkflow("checkpoint-resume.awf.kdl");
     const logs = await tempDir();
     await runPipeline({ graph, logsRoot: logs, backend });
 
@@ -879,7 +859,7 @@ describe("CLI", () => {
   it("validate accepts valid workflow", async () => {
     const result = execFileSync(
       "node",
-      ["--experimental-vm-modules", CLI, "validate", join(WORKFLOWS, "linear.dot")],
+      ["--experimental-vm-modules", CLI, "validate", join(WORKFLOWS, "linear.awf.kdl")],
       { encoding: "utf-8", cwd: CWD },
     );
     expect(result).toContain("valid");
@@ -889,7 +869,7 @@ describe("CLI", () => {
     try {
       execFileSync(
         "node",
-        ["--experimental-vm-modules", CLI, "validate", join(WORKFLOWS, "invalid-no-start.dot")],
+        ["--experimental-vm-modules", CLI, "validate", join(WORKFLOWS, "invalid-no-start.awf.kdl")],
         { encoding: "utf-8", cwd: CWD },
       );
       expect.fail("Should have thrown");
@@ -903,7 +883,7 @@ describe("CLI", () => {
       "node",
       [
         "--experimental-vm-modules", CLI,
-        "run", join(WORKFLOWS, "linear.dot"),
+        "run", join(WORKFLOWS, "linear.awf.kdl"),
         "--dry-run",
       ],
       { encoding: "utf-8", cwd: CWD },
@@ -922,7 +902,7 @@ describe("CLI", () => {
 
 describe("auto_status DOT parsing end-to-end", () => {
   it("parses [STATUS: fail] for auto_status=true node loaded from DOT", async () => {
-    const graph = await loadWorkflow("auto-status.dot");
+    const graph = await loadWorkflow("auto-status.awf.kdl");
     const logs = await tempDir();
 
     // Verify the DOT parser produced the correct auto_status type
@@ -947,7 +927,7 @@ describe("auto_status DOT parsing end-to-end", () => {
   });
 
   it("ignores [STATUS: fail] for codergen node (no auto_status) loaded from DOT", async () => {
-    const graph = await loadWorkflow("auto-status.dot");
+    const graph = await loadWorkflow("auto-status.awf.kdl");
     const logs = await tempDir();
 
     // implement is a plain box node with no auto_status

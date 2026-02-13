@@ -1,0 +1,21 @@
+workflow "HumanGate" {
+  version 2
+  goal "Test human gate"
+  start "plan"
+
+  stage "plan" kind="llm" prompt="Create a plan"
+
+  stage "review" kind="human" {
+    prompt "Approve plan?"
+    option "approve" label="Approve" to="implement"
+    option "revise" label="Revise" to="revise"
+  }
+
+  stage "implement" kind="llm" prompt="Implement plan"
+  stage "revise" kind="llm" prompt="Revise plan"
+  stage "exit" kind="exit"
+
+  transition from="plan" to="review"
+  transition from="implement" to="exit"
+  transition from="revise" to="review"
+}

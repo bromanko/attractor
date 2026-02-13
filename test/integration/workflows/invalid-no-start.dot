@@ -1,7 +1,0 @@
-// Invalid: no start node — validator should reject
-digraph InvalidNoStart {
-  graph [goal="Should fail validation"]
-  exit [shape=Msquare]
-  work [shape=box, prompt="Work"]
-  work -> exit
-}

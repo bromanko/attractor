@@ -3,8 +3,8 @@
  * Attractor CLI — run and validate DOT-defined AI pipelines.
  *
  * Usage:
- *   attractor run <pipeline.dot> [options]
- *   attractor validate <pipeline.dot>
+ *   attractor run <pipeline.awf.kdl> [options]
+ *   attractor validate <pipeline.awf.kdl>
  *   attractor list-models [--provider <name>]
  */
 
@@ -62,8 +62,8 @@ function usage(): never {
 attractor — DOT-based AI pipeline runner
 
 Usage:
-  attractor run <pipeline.dot> [options]   Run a pipeline
-  attractor validate <pipeline.dot>        Validate a pipeline graph
+  attractor run <pipeline.awf.kdl> [options]   Run a pipeline
+  attractor validate <pipeline.awf.kdl>        Validate a pipeline graph
   attractor list-models [--provider name]  Show available models
 
 Run options:
@@ -524,7 +524,7 @@ async function main(): Promise<void> {
   switch (args._command) {
     case "run": {
       if (!args._file) {
-        console.error("Error: run requires a .dot file path");
+        console.error("Error: run requires a workflow file path (.awf.kdl preferred)");
         usage();
       }
       await cmdRun(args._file as string, args);
@@ -532,7 +532,7 @@ async function main(): Promise<void> {
     }
     case "validate": {
       if (!args._file) {
-        console.error("Error: validate requires a .dot file path");
+        console.error("Error: validate requires a workflow file path (.awf.kdl preferred)");
         usage();
       }
       await cmdValidate(args._file as string);

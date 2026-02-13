@@ -1,0 +1,12 @@
+workflow "VariableExpansion" {
+  version 2
+  goal "Build a REST API"
+  start "plan"
+
+  stage "plan" kind="llm" prompt="Plan: $goal"
+  stage "impl" kind="llm" prompt="Implement: $goal"
+  stage "exit" kind="exit"
+
+  transition from="plan" to="impl"
+  transition from="impl" to="exit"
+}

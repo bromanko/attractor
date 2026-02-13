@@ -1,0 +1,16 @@
+workflow "WorkspaceLifecycle" {
+  version 2
+  goal "Test workspace lifecycle"
+  start "ws_create"
+
+  stage "ws_create" kind="workspace.create" workspace_name="integ-test"
+  stage "work" kind="llm" prompt="Do work in workspace"
+  stage "ws_merge" kind="workspace.merge"
+  stage "ws_cleanup" kind="workspace.cleanup"
+  stage "exit" kind="exit"
+
+  transition from="ws_create" to="work"
+  transition from="work" to="ws_merge"
+  transition from="ws_merge" to="ws_cleanup"
+  transition from="ws_cleanup" to="exit"
+}

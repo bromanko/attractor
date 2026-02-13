@@ -1,0 +1,10 @@
+workflow "InvalidNoStart" {
+  version 2
+  goal "Should fail validation"
+  start "missing"
+
+  stage "exit" kind="exit"
+  stage "work" kind="llm" prompt="Work"
+
+  transition from="work" to="exit"
+}

@@ -1,0 +1,55 @@
+workflow "LargePipeline" {
+  version 2
+  goal "Stress test traversal"
+  start "plan"
+
+  stage "plan" kind="llm" prompt="Create plan"
+  stage "design" kind="llm" prompt="Design architecture"
+
+  stage "review_d" kind="decision" {
+    route when="outcome(\"design\") == \"success\"" to="impl_core"
+    route when="true" to="plan"
+  }
+
+  stage "impl_core" kind="llm" prompt="Implement core"
+  stage "impl_api" kind="llm" prompt="Implement API"
+  stage "impl_ui" kind="llm" prompt="Implement UI"
+  stage "test_unit" kind="tool" command="echo unit_pass"
+  stage "test_int" kind="tool" command="echo int_pass"
+
+  stage "gate_test" kind="decision" {
+    route when="outcome(\"test_int\") == \"success\"" to="rev_code"
+    route when="true" to="fix"
+  }
+
+  stage "rev_code" kind="llm" prompt="Review: code"
+  stage "rev_sec" kind="llm" prompt="Review: security"
+  stage "rev_perf" kind="llm" prompt="Review: performance"
+
+  stage "gate_rev" kind="decision" {
+    route when="outcome(\"rev_code\") != \"success\" || outcome(\"rev_sec\") != \"success\" || outcome(\"rev_perf\") != \"success\"" to="fix"
+    route when="true" to="deploy"
+  }
+
+  stage "fix" kind="llm" prompt="Fix issues" {
+    retry max_attempts=2 backoff="exponential"
+  }
+
+  stage "deploy" kind="llm" prompt="Deploy"
+  stage "exit" kind="exit"
+
+  transition from="plan" to="design"
+  transition from="design" to="review_d"
+  transition from="impl_core" to="impl_api"
+  transition from="impl_api" to="impl_ui"
+  transition from="impl_ui" to="test_unit"
+  transition from="test_unit" to="test_int"
+  transition from="test_int" to="gate_test"
+  transition from="rev_code" to="rev_sec" when="outcome(\"rev_code\") == \"success\""
+  transition from="rev_code" to="gate_rev" when="outcome(\"rev_code\") != \"success\""
+  transition from="rev_sec" to="rev_perf" when="outcome(\"rev_sec\") == \"success\""
+  transition from="rev_sec" to="gate_rev" when="outcome(\"rev_sec\") != \"success\""
+  transition from="rev_perf" to="gate_rev"
+  transition from="fix" to="test_unit"
+  transition from="deploy" to="exit"
+}

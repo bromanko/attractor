@@ -1,0 +1,10 @@
+workflow "SelfciBlowup" {
+  version 2
+  goal "Exercise structured selfci failure reporting"
+  start "selfci_check"
+
+  stage "selfci_check" kind="tool" command="bash -lc 'echo \"selfci smoke run\"; echo \"FAIL  smoke/selfci structured error\" >&2; echo \"Tests: 1 failed, 0 passed, 1 total\" >&2; exit 1'"
+  stage "exit" kind="exit"
+
+  transition from="selfci_check" to="exit" when="outcome(\"selfci_check\") == \"success\""
+}

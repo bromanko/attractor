@@ -1,9 +1,0 @@
-// $goal variable expansion in prompts
-digraph VariableExpansion {
-  graph [goal="Build a REST API"]
-  start [shape=Mdiamond]
-  exit  [shape=Msquare]
-  plan  [shape=box, prompt="Plan: $goal"]
-  impl  [shape=box, prompt="Implement: $goal"]
-  start -> plan -> impl -> exit
-}

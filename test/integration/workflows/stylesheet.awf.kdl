@@ -1,0 +1,16 @@
+workflow "Stylesheet" {
+  version 2
+  goal "Test model stylesheet"
+  start "plan"
+
+  stage "plan" kind="llm" prompt="Plan"
+  stage "rev1" kind="llm" prompt="Review code"
+  stage "rev2" kind="llm" prompt="Review security"
+  stage "deploy" kind="llm" prompt="Deploy"
+  stage "exit" kind="exit"
+
+  transition from="plan" to="rev1"
+  transition from="rev1" to="rev2"
+  transition from="rev2" to="deploy"
+  transition from="deploy" to="exit"
+}

@@ -1,0 +1,10 @@
+workflow "Linear" {
+  version 2
+  goal "Test linear execution"
+  start "work"
+
+  stage "work" kind="llm" prompt="Do the work for: $goal"
+  stage "exit" kind="exit"
+
+  transition from="work" to="exit"
+}

@@ -1,0 +1,14 @@
+workflow "FailHalts" {
+  version 2
+  goal "Test failure halts"
+  start "setup"
+
+  stage "setup" kind="llm" prompt="Setup environment"
+  stage "work" kind="llm" prompt="Do work"
+  stage "finish" kind="llm" prompt="Finish"
+  stage "exit" kind="exit"
+
+  transition from="setup" to="work"
+  transition from="work" to="finish"
+  transition from="finish" to="exit"
+}

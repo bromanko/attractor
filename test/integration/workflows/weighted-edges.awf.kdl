@@ -1,0 +1,15 @@
+workflow "WeightedEdges" {
+  version 2
+  goal "Test edge weight selection"
+  start "work"
+
+  stage "work" kind="llm" prompt="Do work"
+  stage "path_lo" kind="llm" prompt="Low priority path"
+  stage "path_hi" kind="llm" prompt="High priority path"
+  stage "exit" kind="exit"
+
+  transition from="work" to="path_lo" priority=1
+  transition from="work" to="path_hi" priority=10
+  transition from="path_lo" to="exit"
+  transition from="path_hi" to="exit"
+}

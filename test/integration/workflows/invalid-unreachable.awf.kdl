@@ -1,0 +1,11 @@
+workflow "InvalidUnreachable" {
+  version 2
+  goal "Should fail validation"
+  start "work"
+
+  stage "work" kind="llm" prompt="Work"
+  stage "exit" kind="exit"
+  stage "orphan" kind="llm" prompt="Nobody reaches me"
+
+  transition from="work" to="exit"
+}

@@ -1,0 +1,16 @@
+workflow "CheckpointResume" {
+  version 2
+  goal "Test checkpoint and resume"
+  start "a"
+
+  stage "a" kind="llm" prompt="Step A"
+  stage "b" kind="llm" prompt="Step B"
+  stage "c" kind="llm" prompt="Step C"
+  stage "d" kind="llm" prompt="Step D"
+  stage "exit" kind="exit"
+
+  transition from="a" to="b"
+  transition from="b" to="c"
+  transition from="c" to="d"
+  transition from="d" to="exit"
+}
