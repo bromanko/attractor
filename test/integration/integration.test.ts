@@ -15,6 +15,9 @@ import { parseDot } from "../../src/pipeline/dot-parser.js";
 import { validate, validateOrRaise } from "../../src/pipeline/validator.js";
 import { runPipeline } from "../../src/pipeline/engine.js";
 import { applyStylesheet } from "../../src/pipeline/stylesheet.js";
+import { LlmBackend } from "../../src/pipeline/llm-backend.js";
+import { Client } from "../../src/llm/client.js";
+import type { ProviderAdapter, Request, Response, StreamEvent } from "../../src/llm/types.js";
 import type {
   CodergenBackend,
   Outcome,
@@ -144,6 +147,36 @@ function mockJj(
   };
   (runner as any).calls = calls;
   return runner as JjRunner & { calls: string[][] };
+}
+
+/** Mock LLM provider that returns per-node responses. */
+function mockLlmAdapter(responses: Record<string, string>, fallback = "Done."): ProviderAdapter {
+  return {
+    name: "mock",
+    async complete(request: Request): Promise<Response> {
+      // Extract the node id from the prompt (all integration workflow prompts
+      // are unique enough to pattern-match, but we match on any key substring).
+      const promptText = request.messages
+        .flatMap((m) => m.content.filter((c) => c.kind === "text").map((c) => c.text))
+        .join(" ");
+      let text = fallback;
+      for (const [key, val] of Object.entries(responses)) {
+        if (promptText.includes(key)) {
+          text = val;
+          break;
+        }
+      }
+      return {
+        id: "resp_01",
+        model: request.model,
+        provider: "mock",
+        message: { role: "assistant", content: [{ kind: "text", text }] },
+        finish_reason: { reason: "stop" },
+        usage: { input_tokens: 10, output_tokens: 20, total_tokens: 30 },
+      };
+    },
+    async *stream(): AsyncIterable<StreamEvent> {},
+  };
 }
 
 // ===========================================================================
@@ -697,6 +730,7 @@ describe("Validation", () => {
       "fail-to-gate.dot",
       "large-pipeline.dot",
       "workspace-lifecycle.dot",
+      "auto-status.dot",
     ];
 
     const graphs = await Promise.all(
@@ -872,5 +906,60 @@ describe("CLI", () => {
     expect(result).toContain("start");
     expect(result).toContain("work");
     expect(result).toContain("exit");
+  });
+});
+
+// ===========================================================================
+// 20. auto_status from DOT → status marker parsing (end-to-end)
+// ===========================================================================
+
+describe("auto_status DOT parsing end-to-end", () => {
+  it("parses [STATUS: fail] for auto_status=true node loaded from DOT", async () => {
+    const graph = await loadWorkflow("auto-status.dot");
+    const logs = await tempDir();
+
+    // Verify the DOT parser produced the correct auto_status type
+    const reviewNode = graph.nodes.find((n) => n.id === "review")!;
+    expect(reviewNode.attrs.auto_status).toBe(true);
+
+    const adapter = mockLlmAdapter({
+      Review: "Looks bad.\n[STATUS: fail]\n[FAILURE_REASON: Missing error handling]",
+    });
+    const client = new Client({ providers: { mock: adapter } });
+    const backend = new LlmBackend({ client, model: "test-model" });
+
+    const result = await runPipeline({ graph, logsRoot: logs, backend });
+
+    // review has auto_status=true → [STATUS: fail] is honoured → pipeline halts
+    // (no failure edge from review)
+    expect(result.status).toBe("fail");
+    expect(result.completedNodes).toContain("review");
+    expect(result.completedNodes).not.toContain("exit");
+    expect(result.lastOutcome?.status).toBe("fail");
+    expect(result.lastOutcome?.failure_reason).toBe("Missing error handling");
+  });
+
+  it("ignores [STATUS: fail] for codergen node (no auto_status) loaded from DOT", async () => {
+    const graph = await loadWorkflow("auto-status.dot");
+    const logs = await tempDir();
+
+    // implement is a plain box node with no auto_status
+    const implNode = graph.nodes.find((n) => n.id === "implement")!;
+    expect(implNode.attrs.auto_status).toBeUndefined();
+
+    const adapter = mockLlmAdapter({
+      "Write the code": "Here is the code.\n[STATUS: fail]\n[FAILURE_REASON: Oops]",
+      Review: "All good.\n[STATUS: success]",
+    });
+    const client = new Client({ providers: { mock: adapter } });
+    const backend = new LlmBackend({ client, model: "test-model" });
+
+    const result = await runPipeline({ graph, logsRoot: logs, backend });
+
+    // implement has no auto_status → markers ignored → treated as success
+    expect(result.status).toBe("success");
+    expect(result.completedNodes).toContain("implement");
+    expect(result.completedNodes).toContain("review");
+    expect(result.completedNodes).toContain("exit");
   });
 });

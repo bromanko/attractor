@@ -1,0 +1,21 @@
+// Tests that auto_status=true parsed from DOT activates status marker parsing.
+digraph AutoStatus {
+  graph [goal="Test auto_status from DOT"]
+  node [shape=box]
+
+  start [shape=Mdiamond]
+  exit  [shape=Msquare]
+
+  implement [
+    label="Implement",
+    prompt="Write the code for: $goal"
+  ]
+
+  review [
+    label="Review",
+    auto_status=true,
+    prompt="Review the implementation"
+  ]
+
+  start -> implement -> review -> exit
+}
