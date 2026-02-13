@@ -8,6 +8,7 @@
 import { readFile } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { existsSync } from "node:fs";
+import { hasGraphEasy, runGraphEasy } from "../pipeline/graph-easy.js";
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import {
   AuthStorage,
@@ -20,6 +21,7 @@ import {
   parseWorkflowKdl,
   validateWorkflow,
   workflowToGraph,
+  graphToDot,
 } from "../pipeline/index.js";
 import type {
   PipelineEvent,
@@ -32,7 +34,7 @@ import type {
   WorkflowDefinition,
 } from "../pipeline/index.js";
 import { parseCommand, CommandParseError, usageText } from "./attractor-command.js";
-import type { ParsedRunCommand, ParsedValidateCommand } from "./attractor-command.js";
+import type { ParsedRunCommand, ParsedValidateCommand, ParsedShowCommand, ShowFormat } from "./attractor-command.js";
 import { PiInterviewer } from "./attractor-interviewer.js";
 import { AttractorPanel, CUSTOM_MESSAGE_TYPE } from "./attractor-panel.js";
 import type { StageMessageDetails } from "./attractor-panel.js";
@@ -81,6 +83,7 @@ export default function attractorExtension(pi: ExtensionAPI): void {
       const subcommands = [
         { value: "run", label: "run — Execute a pipeline" },
         { value: "validate", label: "validate — Check pipeline graph" },
+        { value: "show", label: "show — Visualize a pipeline graph" },
       ];
       const filtered = subcommands.filter((s) => s.value.startsWith(prefix));
       return filtered.length > 0 ? filtered : null;
@@ -111,6 +114,9 @@ export default function attractorExtension(pi: ExtensionAPI): void {
         case "validate":
           await handleValidate(parsed, ctx);
           break;
+        case "show":
+          await handleShow(parsed, ctx, pi);
+          break;
         case "run":
           await handleRun(parsed, ctx, pi);
           break;
@@ -129,6 +135,52 @@ function parseWorkflow(path: string, source: string): { graph: Graph; workflow: 
   }
   const workflow = parseWorkflowKdl(source);
   return { graph: workflowToGraph(workflow), workflow };
+}
+
+// ---------------------------------------------------------------------------
+// /attractor show
+// ---------------------------------------------------------------------------
+
+
+async function handleShow(
+  cmd: ParsedShowCommand,
+  ctx: ExtensionCommandContext,
+  pi: ExtensionAPI,
+): Promise<void> {
+  const source = await readFile(cmd.workflowPath, "utf-8");
+  const { graph } = parseWorkflow(cmd.workflowPath, source);
+  const dot = graphToDot(graph);
+
+  let format: ShowFormat = cmd.format ?? "boxart";
+  const graphEasyAvailable = format !== "dot" && await hasGraphEasy();
+
+  // If the desired format needs graph-easy but it's not available, fall back to dot
+  if (format !== "dot" && !graphEasyAvailable) {
+    ctx.ui.notify(
+      "graph-easy not found — falling back to DOT output. " +
+      "Install graph-easy for ASCII/boxart rendering.",
+      "warning",
+    );
+    format = "dot";
+  }
+
+  if (format === "dot") {
+    pi.sendMessage({
+      customType: CUSTOM_MESSAGE_TYPE,
+      content: "```dot\n" + dot + "```",
+      display: true,
+      details: { stage: graph.name, state: "success", output: dot } as StageMessageDetails,
+    });
+    return;
+  }
+
+  const rendered = await runGraphEasy(dot, format);
+  pi.sendMessage({
+    customType: CUSTOM_MESSAGE_TYPE,
+    content: "```\n" + rendered + "```",
+    display: true,
+    details: { stage: graph.name, state: "success", output: rendered } as StageMessageDetails,
+  });
 }
 
 // ---------------------------------------------------------------------------

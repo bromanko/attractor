@@ -13,6 +13,12 @@ const registeredCommands = new Map<string, { handler: Function; description?: st
 
 let runPipelineImpl: ((config: any) => Promise<any>) | undefined;
 
+const execFileMock = vi.fn();
+
+vi.mock("node:child_process", () => ({
+  execFile: (...args: unknown[]) => execFileMock(...args),
+}));
+
 vi.mock("../pipeline/index.js", () => {
   const graph = {
     name: "TestPipeline",
@@ -33,6 +39,7 @@ vi.mock("../pipeline/index.js", () => {
     parseWorkflowKdl: vi.fn(() => ({ version: 2, name: "wf", start: "start", stages: [] })),
     workflowToGraph: vi.fn(() => graph),
     validateWorkflow: vi.fn(() => []),
+    graphToDot: vi.fn(() => 'digraph "TestPipeline" {\n  start -> work\n  work -> exit\n}'),
     runPipeline: vi.fn(async (config: any) => {
       if (runPipelineImpl) return runPipelineImpl(config);
       const events: PipelineEvent[] = [
@@ -157,6 +164,7 @@ describe("attractor extension", () => {
   beforeEach(async () => {
     registeredCommands.clear();
     runPipelineImpl = undefined;
+    execFileMock.mockReset();
     tempDir = await mkdtemp(join(tmpdir(), "attractor-ext-test-"));
     dotFile = join(tempDir, "test.awf.kdl");
     await writeFile(dotFile, 'workflow "x" { version 2 start "exit" stage "exit" kind="exit" }');
@@ -217,6 +225,166 @@ describe("attractor extension", () => {
         expect.stringContaining("Valid"),
         "info",
       );
+    });
+  });
+
+  describe("show", () => {
+    /** Stub execFile so graph-easy appears available and produces output. */
+    function stubGraphEasyAvailable(): void {
+      execFileMock.mockImplementation(
+        (cmd: string, args: string[], optOrCb: unknown, maybeCb?: unknown) => {
+          const cb = typeof optOrCb === "function"
+            ? (optOrCb as Function)
+            : (maybeCb as Function);
+
+          if (cmd === "graph-easy" && (args as string[])[0] === "--version") {
+            cb(null, "usage…", "");
+            return { stdin: { write: vi.fn(), end: vi.fn() } };
+          }
+          if (cmd === "graph-easy" && (args as string[]).includes("--from=dot")) {
+            cb(null, "┌───────┐     ┌──────┐\n│ start │ --> │ exit │\n└───────┘     └──────┘", "");
+            return { stdin: { write: vi.fn(), end: vi.fn() } };
+          }
+          cb(new Error("unexpected call"));
+          return { stdin: { write: vi.fn(), end: vi.fn() } };
+        },
+      );
+    }
+
+    /** Stub execFile so graph-easy is not found (ENOENT). */
+    function stubGraphEasyMissing(): void {
+      execFileMock.mockImplementation(
+        (cmd: string, _args: string[], optOrCb: unknown, maybeCb?: unknown) => {
+          const cb = typeof optOrCb === "function"
+            ? (optOrCb as Function)
+            : (maybeCb as Function);
+          if (cmd === "graph-easy") {
+            const err: NodeJS.ErrnoException = new Error("spawn graph-easy ENOENT");
+            err.code = "ENOENT";
+            cb(err, "", "");
+            return { stdin: { write: vi.fn(), end: vi.fn() } };
+          }
+          cb(new Error("unexpected call"));
+          return { stdin: { write: vi.fn(), end: vi.fn() } };
+        },
+      );
+    }
+
+    it("format=dot sends a markdown dot code block via sendMessage", async () => {
+      const pi = makePi();
+      attractorExtension(pi);
+      const ctx = makeCtx(tempDir);
+      const handler = registeredCommands.get("attractor")!.handler;
+
+      await handler(`show ${dotFile} --format dot`, ctx);
+
+      expect(pi.sendMessage).toHaveBeenCalledTimes(1);
+      const msg = (pi.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(msg.content).toContain("```dot\n");
+      expect(msg.content).toContain("digraph");
+      // Should NOT have invoked graph-easy
+      expect(execFileMock).not.toHaveBeenCalled();
+    });
+
+    it("default format (boxart) falls back to dot with warning when graph-easy is missing", async () => {
+      stubGraphEasyMissing();
+      const pi = makePi();
+      attractorExtension(pi);
+      const ctx = makeCtx(tempDir);
+      const handler = registeredCommands.get("attractor")!.handler;
+
+      await handler(`show ${dotFile}`, ctx);
+
+      // Should have warned about fallback
+      expect(ctx.ui.notify).toHaveBeenCalledWith(
+        expect.stringContaining("graph-easy not found"),
+        "warning",
+      );
+      // Should send DOT output as fallback
+      expect(pi.sendMessage).toHaveBeenCalledTimes(1);
+      const msg = (pi.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(msg.content).toContain("```dot\n");
+      expect(msg.content).toContain("digraph");
+    });
+
+    it("ascii format falls back to dot with warning when graph-easy is missing", async () => {
+      stubGraphEasyMissing();
+      const pi = makePi();
+      attractorExtension(pi);
+      const ctx = makeCtx(tempDir);
+      const handler = registeredCommands.get("attractor")!.handler;
+
+      await handler(`show ${dotFile} --format ascii`, ctx);
+
+      expect(ctx.ui.notify).toHaveBeenCalledWith(
+        expect.stringContaining("graph-easy not found"),
+        "warning",
+      );
+      const msg = (pi.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(msg.content).toContain("```dot\n");
+    });
+
+    it("boxart format with graph-easy sends rendered output in a plain code block", async () => {
+      stubGraphEasyAvailable();
+      const pi = makePi();
+      attractorExtension(pi);
+      const ctx = makeCtx(tempDir);
+      const handler = registeredCommands.get("attractor")!.handler;
+
+      await handler(`show ${dotFile} --format boxart`, ctx);
+
+      expect(pi.sendMessage).toHaveBeenCalledTimes(1);
+      const msg = (pi.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(msg.content).toMatch(/^```\n/);
+      expect(msg.content).toContain("start");
+      expect(msg.content).not.toContain("```dot");
+    });
+
+    it("ascii format with graph-easy sends rendered output", async () => {
+      stubGraphEasyAvailable();
+      const pi = makePi();
+      attractorExtension(pi);
+      const ctx = makeCtx(tempDir);
+      const handler = registeredCommands.get("attractor")!.handler;
+
+      await handler(`show ${dotFile} --format ascii`, ctx);
+
+      expect(pi.sendMessage).toHaveBeenCalledTimes(1);
+      const msg = (pi.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(msg.content).toMatch(/^```\n/);
+    });
+
+    it("handles runGraphEasy error gracefully", async () => {
+      // graph-easy is "available" (--help succeeds) but fails on actual conversion
+      execFileMock.mockImplementation(
+        (cmd: string, args: string[], optOrCb: unknown, maybeCb?: unknown) => {
+          const cb = typeof optOrCb === "function"
+            ? (optOrCb as Function)
+            : (maybeCb as Function);
+
+          if (cmd === "graph-easy" && (args as string[])[0] === "--version") {
+            cb(null, "usage…", "");
+            return { stdin: { write: vi.fn(), end: vi.fn() } };
+          }
+          if (cmd === "graph-easy" && (args as string[]).includes("--from=dot")) {
+            cb(new Error("segfault"), "", "Segmentation fault");
+            return { stdin: { write: vi.fn(), end: vi.fn() } };
+          }
+          cb(new Error("unexpected"));
+          return { stdin: { write: vi.fn(), end: vi.fn() } };
+        },
+      );
+
+      const pi = makePi();
+      attractorExtension(pi);
+      const ctx = makeCtx(tempDir);
+      const handler = registeredCommands.get("attractor")!.handler;
+
+      // The error should propagate — handleShow doesn't catch runGraphEasy errors,
+      // but the top-level handler re-throws non-CommandParseError errors.
+      await expect(
+        handler(`show ${dotFile} --format boxart`, ctx),
+      ).rejects.toThrow("graph-easy failed");
     });
   });
 
