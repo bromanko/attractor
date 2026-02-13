@@ -211,6 +211,114 @@ src/
     └── attractor-panel.ts  TUI panel rendering
 ```
 
+## CLI
+
+Attractor ships a standalone CLI for running, validating, and visualizing workflows.
+
+```sh
+npm install -g attractor   # or use npx attractor
+```
+
+### Commands
+
+```sh
+# Run a pipeline
+attractor run pipeline.awf.kdl [options]
+
+# Validate a workflow graph
+attractor validate pipeline.awf.kdl
+
+# Visualize a workflow graph (ASCII/boxart via graph-easy, or raw DOT)
+attractor show pipeline.awf.kdl [--format ascii|boxart|dot]
+
+# List available LLM models
+attractor list-models [--provider anthropic]
+```
+
+### Run Options
+
+| Flag | Description |
+|------|-------------|
+| `--goal <text>` | Override the graph's goal attribute |
+| `--model <model>` | LLM model to use (default: `claude-opus-4-6`) |
+| `--provider <name>` | Provider name (default: `anthropic`) |
+| `--logs <dir>` | Logs directory (default: `.attractor/logs`) |
+| `--system <prompt>` | System prompt for codergen stages |
+| `--tools <mode>` | Tool mode: `none`, `read-only`, `coding` (default: `coding`) |
+| `--approve-all` | Auto-approve all human gates (no interactive prompts) |
+| `--resume [checkpoint]` | Resume from checkpoint (default: `<logs>/checkpoint.json`) |
+| `--dry-run` | Validate and print graph without executing |
+| `--verbose` | Show detailed event output |
+
+### Authentication
+
+The CLI uses pi's `AuthStorage` for credentials. Either:
+
+- Set `ANTHROPIC_API_KEY` in your environment, or
+- Run `pi /login` to authenticate with a Claude subscription
+
+### Example
+
+```sh
+attractor run feature.awf.kdl --goal "Add user authentication" --tools coding --verbose
+```
+
+The CLI renders a live spinner per stage, shows per-stage model overrides, and prints a usage/cost summary at completion.
+
+## Pi Extension
+
+Attractor integrates with the [pi coding agent](https://github.com/mariozechner/pi-coding-agent) as a `/attractor` slash command, providing an interactive TUI experience for pipeline execution.
+
+### Setup
+
+Place the extension entry point in your project:
+
+```
+.pi/extensions/attractor.ts
+```
+
+```ts
+// Re-exports the built attractor extension for pi auto-discovery
+export { default } from "../../dist/extensions/attractor.js";
+```
+
+Then reload pi (`/reload`) to pick up the extension.
+
+### Commands
+
+```
+/attractor run <workflow> --goal "..." [options]
+/attractor validate <workflow>
+/attractor show <workflow> [--format ascii|boxart|dot]
+```
+
+### Workflow Resolution
+
+The extension resolves workflow references in order:
+
+1. Direct file path (absolute or relative to cwd)
+2. Bare name → `.attractor/workflows/<name>.awf.kdl`
+
+So `/attractor run deploy` will look for `.attractor/workflows/deploy.awf.kdl`.
+
+### Run Options
+
+| Flag | Description |
+|------|-------------|
+| `--goal <text>` | Pipeline goal (required unless the graph has one) |
+| `--resume` | Resume from last checkpoint |
+| `--approve-all` | Auto-approve all human gates |
+| `--logs <dir>` | Logs directory (default: `.attractor/logs`) |
+| `--tools <mode>` | Tool mode: `none`, `read-only`, `coding` |
+| `--dry-run` | Validate and print graph without executing |
+
+### Features
+
+- **Interactive interviewer** — human gate prompts appear inline in the pi TUI
+- **Live panel** — stage progress, agent tool calls, and text streaming rendered via custom message types
+- **Stage result rendering** — success/failure cards with elapsed time and error details in the conversation area
+- **Tab completion** — subcommand suggestions when typing `/attractor`
+
 ## Development
 
 This repo is managed with **Nix flakes**. Enter the dev shell first:
