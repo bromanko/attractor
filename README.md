@@ -72,48 +72,68 @@ const result = await runPipeline({
 
 ## Pipeline Engine Features
 
-### KDL Workflow Parsing
-- Native `.awf.kdl` workflow format
-- Explicit stage kinds and transition semantics
-- Typed attributes with strict validation
+### Stage Kinds
 
-### Node Handlers (Section 4)
-| Shape | Handler | Description |
-|-------|---------|-------------|
-| `Mdiamond` | `start` | Pipeline entry point (no-op) |
-| `Msquare` | `exit` | Pipeline exit point (no-op, goal gate check) |
-| `box` | `codergen` | LLM task with `$goal` variable expansion |
-| `hexagon` | `wait.human` | Human-in-the-loop gate |
-| `diamond` | `conditional` | Routing based on edge conditions |
-| `parallelogram` | `tool` | External tool execution |
+| Kind | Handler | Description |
+|------|---------|-------------|
+| `llm` | `codergen` | LLM task with `$goal` variable expansion |
+| `exit` | `exit` | Pipeline exit point (no-op, goal gate check) |
+| `human` | `wait.human` | Human-in-the-loop gate |
+| `decision` | `conditional` | Routing based on edge conditions |
+| `tool` | `tool` | External tool execution |
+| `workspace.create` | `workspace.create` | Create an isolated jj workspace |
+| `workspace.merge` | `workspace.merge` | Merge a workspace back |
+| `workspace.cleanup` | `workspace.cleanup` | Clean up a workspace |
 
-### Edge Selection (Section 3.3)
-5-step deterministic priority: condition match → preferred label → suggested IDs → weight → lexical tiebreak
+### Edge Selection
 
-### Condition Expressions (Section 10)
+5-step deterministic priority: condition match → preferred label → suggested IDs → weight → lexical tiebreak.
+
+### Condition Expressions
+
 ```kdl
-gate -> exit      [condition="outcome=success"]
-gate -> fix       [condition="outcome=fail"]
-gate -> deploy    [condition="outcome=success && context.tests_passed=true"]
+stage "gate" kind="decision" {
+  route when="outcome(\"validate\") == \"success\"" to="deploy"
+  route when="outcome(\"validate\") == \"fail\"" to="fix"
+  route when="outcome(\"validate\") == \"success\" && context(\"tests_passed\") == \"true\"" to="deploy"
+}
 ```
 
-### Goal Gates (Section 3.4)
-Nodes with `goal_gate=true` must succeed before the pipeline can exit.
+### Goal Gates
 
-### Model Stylesheet (Section 8)
-CSS-like rules for per-node LLM configuration:
+Stages with `goal_gate=true` must succeed before the pipeline can exit.
+
+### Model Profiles
+
+KDL workflows configure per-stage models via named profiles:
+
 ```kdl
-graph [model_stylesheet="
-    * { llm_model: claude-sonnet-4-5; }
-    .code { llm_model: claude-opus-4-6; }
-    #critical { llm_model: gpt-5.2; reasoning_effort: high; }
-"]
+workflow "example" {
+  version 2
+  start "plan"
+
+  models {
+    default "fast"
+    profile "fast" model="claude-sonnet-4-5"
+    profile "heavy" model="claude-opus-4-6" reasoning_effort="high"
+  }
+
+  stage "plan" kind="llm" prompt="Plan it" model_profile="fast"
+  stage "implement" kind="llm" prompt="Build it" model_profile="heavy"
+  stage "done" kind="exit"
+
+  transition from="plan" to="implement"
+  transition from="implement" to="done"
+}
 ```
 
-### Checkpoint & Resume (Section 5.3)
+
+### Checkpoint & Resume
+
 Execution state saved after each node. Resume from any checkpoint.
 
-### Human-in-the-Loop (Section 6)
+### Human-in-the-Loop
+
 Built-in interviewers: `AutoApproveInterviewer`, `QueueInterviewer`, `CallbackInterviewer`, `RecordingInterviewer`.
 
 ## Unified LLM Client
@@ -167,21 +187,43 @@ src/
 │   ├── tools.ts            Shared tools (read, write, edit, shell, grep, glob)
 │   ├── truncation.ts       Output truncation (char + line)
 │   └── local-env.ts        Local execution environment
-└── pipeline/               Attractor Pipeline Engine
-    ├── types.ts            Graph model, context, handlers, interviewers
-    ├── workflow-kdl-parser.ts  KDL workflow parser
-    ├── validator.ts        Lint rules (13 built-in)
-    ├── conditions.ts       Edge condition expression language
-    ├── engine.ts           Core execution loop, edge selection, checkpoints
-    ├── handlers.ts         Node handlers + registry
-    ├── interviewers.ts     Human-in-the-loop implementations
-    └── stylesheet.ts       CSS-like model stylesheet
+├── pipeline/               Attractor Pipeline Engine
+│   ├── types.ts            Graph model, context, handlers, interviewers
+│   ├── workflow-types.ts   KDL workflow definition types
+│   ├── workflow-kdl-parser.ts  KDL workflow parser
+│   ├── workflow-loader.ts  Workflow-to-graph conversion
+│   ├── workflow-validator.ts   Workflow-level validation
+│   ├── workflow-expr.ts    Workflow expression evaluator
+│   ├── validator.ts        Graph-level lint rules
+│   ├── conditions.ts       Edge condition expression language
+│   ├── engine.ts           Core execution loop, edge selection, checkpoints
+│   ├── handlers.ts         Node handlers + registry
+│   ├── interviewers.ts     Human-in-the-loop implementations
+│   ├── workspace.ts        Jujutsu workspace handlers
+│   ├── tool-failure.ts     Structured tool failure details
+│   ├── status-markers.ts   Stage status file utilities
+│   ├── llm-backend.ts      LLM backend integration
+│   └── graph-to-dot.ts     Graph → DOT export
+└── extensions/             Pi extension integration
+    ├── attractor.ts        Main extension entry point
+    ├── attractor-command.ts   Pipeline CLI commands
+    ├── attractor-interviewer.ts  Interactive interviewer
+    └── attractor-panel.ts  TUI panel rendering
 ```
 
 ## Development
 
+This repo is managed with **Nix flakes**. Enter the dev shell first:
+
+```sh
+nix develop        # or use direnv (auto-loads .envrc)
+```
+
+Then:
+
 ```sh
 npm install
 npm run build
-npm test        # 56 tests
+npm run lint       # type-check
+npm test
 ```

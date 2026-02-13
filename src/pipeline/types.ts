@@ -61,7 +61,6 @@ export type GraphEdge = {
 export type GraphAttrs = {
   goal?: string;
   label?: string;
-  model_stylesheet?: string;
   default_max_retry?: number;
   retry_target?: string;
   fallback_retry_target?: string;

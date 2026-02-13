@@ -53,9 +53,6 @@ export {
 } from "./tool-failure.js";
 export type { ToolFailureClass, ToolFailureDetails } from "./tool-failure.js";
 
-// Stylesheet
-export { applyStylesheet, parseStylesheet } from "./stylesheet.js";
-
 // KDL workflow format
 export type {
   WorkflowDefinition,
@@ -78,6 +75,9 @@ export type {
 export { validateWorkflow, validateWorkflowOrRaise } from "./workflow-validator.js";
 export { parseWorkflowKdl } from "./workflow-kdl-parser.js";
 export { parseWorkflowDefinition, workflowToGraph, parseWorkflowToGraph } from "./workflow-loader.js";
+
+// DOT serialization
+export { graphToDot } from "./graph-to-dot.js";
 
 // Pi SDK Backend
 export { PiBackend } from "../pi-backend.js";
