@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseWorkflowKdl } from "./awf2-kdl-parser.js";
+import { parseWorkflowKdl } from "./workflow-kdl-parser.js";
 
 describe("parseWorkflowKdl", () => {
   it("parses a minimal Workflow workflow", () => {

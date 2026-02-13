@@ -1,18 +1,18 @@
 import { isAbsolute } from "node:path";
-import type { Awf2Workflow, Awf2Diagnostic, Awf2Stage } from "./awf2-types.js";
-import { awf2Diag } from "./awf2-types.js";
-import { parseAwf2Expr, isPlausibleExpression } from "./awf2-expr.js";
+import type { WorkflowDefinition, WorkflowDiagnostic, WorkflowStage } from "./workflow-types.js";
+import { workflowDiag } from "./workflow-types.js";
+import { parseWorkflowExpr, isPlausibleExpression } from "./workflow-expr.js";
 
-function isHumanOrDecision(stage: Awf2Stage): boolean {
+function isHumanOrDecision(stage: WorkflowStage): boolean {
   return stage.kind === "human" || stage.kind === "decision";
 }
 
-function hasDecisionCatchAll(stage: Awf2Stage): boolean {
+function hasDecisionCatchAll(stage: WorkflowStage): boolean {
   if (stage.kind !== "decision") return true;
   return stage.routes.some((r) => r.when.trim() === "true");
 }
 
-function buildTransitionAdj(workflow: Awf2Workflow): ReadonlyMap<string, string[]> {
+function buildTransitionAdj(workflow: WorkflowDefinition): ReadonlyMap<string, string[]> {
   const adj = new Map<string, string[]>();
   for (const t of workflow.transitions ?? []) {
     let targets = adj.get(t.from);
@@ -27,7 +27,7 @@ function buildTransitionAdj(workflow: Awf2Workflow): ReadonlyMap<string, string[
 
 function outboundNeighbors(
   stageId: string,
-  stageMap: ReadonlyMap<string, Awf2Stage>,
+  stageMap: ReadonlyMap<string, WorkflowStage>,
   transitionAdj: ReadonlyMap<string, string[]>,
 ): string[] {
   const stage = stageMap.get(stageId);
@@ -40,8 +40,8 @@ function outboundNeighbors(
 }
 
 function reachableFromStart(
-  workflow: Awf2Workflow,
-  stageMap: ReadonlyMap<string, Awf2Stage>,
+  workflow: WorkflowDefinition,
+  stageMap: ReadonlyMap<string, WorkflowStage>,
   transitionAdj: ReadonlyMap<string, string[]>,
 ): Set<string> {
   const seen = new Set<string>();
@@ -61,19 +61,19 @@ function reachableFromStart(
   return seen;
 }
 
-export function validateWorkflow(workflow: Awf2Workflow): Awf2Diagnostic[] {
-  const diags: Awf2Diagnostic[] = [];
+export function validateWorkflow(workflow: WorkflowDefinition): WorkflowDiagnostic[] {
+  const diags: WorkflowDiagnostic[] = [];
 
   if (workflow.version !== 2) {
-    diags.push(awf2Diag("workflow_version", "error", `Workflow version must be 2, got: ${workflow.version}`));
+    diags.push(workflowDiag("workflow_version", "error", `Workflow version must be 2, got: ${workflow.version}`));
   }
 
   const transitionAdj = buildTransitionAdj(workflow);
-  const stageMap = new Map<string, Awf2Stage>();
+  const stageMap = new Map<string, WorkflowStage>();
   const stageIds = new Set<string>();
   for (const stage of workflow.stages) {
     if (stageIds.has(stage.id)) {
-      diags.push(awf2Diag("workflow_duplicate_stage", "error", `Duplicate stage id: "${stage.id}"`, { node_id: stage.id }));
+      diags.push(workflowDiag("workflow_duplicate_stage", "error", `Duplicate stage id: "${stage.id}"`, { node_id: stage.id }));
       continue;
     }
     stageIds.add(stage.id);
@@ -81,7 +81,7 @@ export function validateWorkflow(workflow: Awf2Workflow): Awf2Diagnostic[] {
   }
 
   if (!stageIds.has(workflow.start)) {
-    diags.push(awf2Diag("workflow_start_exists", "error", `start references missing stage: "${workflow.start}"`));
+    diags.push(workflowDiag("workflow_start_exists", "error", `start references missing stage: "${workflow.start}"`));
   }
 
   // Stage-specific validation
@@ -90,7 +90,7 @@ export function validateWorkflow(workflow: Awf2Workflow): Awf2Diagnostic[] {
       const hasPrompt = typeof stage.prompt === "string" && stage.prompt.trim().length > 0;
       const hasPromptFile = typeof stage.prompt_file === "string" && stage.prompt_file.trim().length > 0;
       if (hasPrompt === hasPromptFile) {
-        diags.push(awf2Diag(
+        diags.push(workflowDiag(
           "workflow_llm_prompt",
           "error",
           `LLM stage "${stage.id}" must define exactly one of prompt or prompt_file.`,
@@ -98,7 +98,7 @@ export function validateWorkflow(workflow: Awf2Workflow): Awf2Diagnostic[] {
         ));
       }
       if (hasPromptFile && (stage.prompt_file!.includes("..") || isAbsolute(stage.prompt_file!))) {
-        diags.push(awf2Diag(
+        diags.push(workflowDiag(
           "workflow_prompt_file_path",
           "error",
           `LLM stage "${stage.id}" prompt_file must be a relative path without directory traversal.`,
@@ -106,7 +106,7 @@ export function validateWorkflow(workflow: Awf2Workflow): Awf2Diagnostic[] {
         ));
       }
       if (stage.model_profile && !workflow.models?.profile?.[stage.model_profile]) {
-        diags.push(awf2Diag(
+        diags.push(workflowDiag(
           "workflow_model_profile",
           "error",
           `Stage "${stage.id}" references unknown model_profile "${stage.model_profile}".`,
@@ -120,7 +120,7 @@ export function validateWorkflow(workflow: Awf2Workflow): Awf2Diagnostic[] {
     // Commands are executed in a shell; see handlers.ts ToolHandler.
     if (stage.kind === "tool") {
       if (!stage.command.trim()) {
-        diags.push(awf2Diag(
+        diags.push(workflowDiag(
           "workflow_tool_command",
           "error",
           `Tool stage "${stage.id}" has an empty command.`,
@@ -131,7 +131,7 @@ export function validateWorkflow(workflow: Awf2Workflow): Awf2Diagnostic[] {
 
     if (stage.kind === "human") {
       if (stage.options.length < 2) {
-        diags.push(awf2Diag(
+        diags.push(workflowDiag(
           "workflow_human_options",
           "error",
           `Human stage "${stage.id}" must declare at least 2 options.`,
@@ -141,7 +141,7 @@ export function validateWorkflow(workflow: Awf2Workflow): Awf2Diagnostic[] {
     }
 
     if (stage.kind === "decision" && !hasDecisionCatchAll(stage)) {
-      diags.push(awf2Diag(
+      diags.push(workflowDiag(
         "workflow_decision_catch_all",
         "error",
         `Decision stage "${stage.id}" must include a catch-all route: when="true".`,
@@ -151,7 +151,7 @@ export function validateWorkflow(workflow: Awf2Workflow): Awf2Diagnostic[] {
 
     if (stage.retry) {
       if (!Number.isInteger(stage.retry.max_attempts) || stage.retry.max_attempts < 1) {
-        diags.push(awf2Diag(
+        diags.push(workflowDiag(
           "workflow_retry_max_attempts",
           "error",
           `Stage "${stage.id}" has invalid retry.max_attempts: ${stage.retry.max_attempts}`,
@@ -164,19 +164,19 @@ export function validateWorkflow(workflow: Awf2Workflow): Awf2Diagnostic[] {
   // Routing partition rule + transition references
   for (const t of workflow.transitions ?? []) {
     if (!stageIds.has(t.from)) {
-      diags.push(awf2Diag("workflow_transition_from", "error", `Transition source "${t.from}" does not exist.`, {
+      diags.push(workflowDiag("workflow_transition_from", "error", `Transition source "${t.from}" does not exist.`, {
         edge: [t.from, t.to],
       }));
     }
     if (!stageIds.has(t.to)) {
-      diags.push(awf2Diag("workflow_transition_to", "error", `Transition target "${t.to}" does not exist.`, {
+      diags.push(workflowDiag("workflow_transition_to", "error", `Transition target "${t.to}" does not exist.`, {
         edge: [t.from, t.to],
       }));
     }
 
     const from = stageMap.get(t.from);
     if (from && isHumanOrDecision(from)) {
-      diags.push(awf2Diag(
+      diags.push(workflowDiag(
         "workflow_routing_partition",
         "error",
         `Stage "${from.id}" (${from.kind}) must use stage-local routing only; global transitions from this stage are not allowed.`,
@@ -185,7 +185,7 @@ export function validateWorkflow(workflow: Awf2Workflow): Awf2Diagnostic[] {
     }
 
     if (t.when && !isPlausibleExpression(t.when)) {
-      diags.push(awf2Diag(
+      diags.push(workflowDiag(
         "workflow_expression_syntax",
         "error",
         `Invalid transition expression: ${t.when}`,
@@ -199,7 +199,7 @@ export function validateWorkflow(workflow: Awf2Workflow): Awf2Diagnostic[] {
     if (stage.kind === "human") {
       for (const option of stage.options) {
         if (!stageIds.has(option.to)) {
-          diags.push(awf2Diag(
+          diags.push(workflowDiag(
             "workflow_option_target",
             "error",
             `Human stage "${stage.id}" option "${option.key}" targets missing stage "${option.to}".`,
@@ -212,7 +212,7 @@ export function validateWorkflow(workflow: Awf2Workflow): Awf2Diagnostic[] {
     if (stage.kind === "decision") {
       for (const route of stage.routes) {
         if (!stageIds.has(route.to)) {
-          diags.push(awf2Diag(
+          diags.push(workflowDiag(
             "workflow_route_target",
             "error",
             `Decision stage "${stage.id}" route targets missing stage "${route.to}".`,
@@ -221,7 +221,7 @@ export function validateWorkflow(workflow: Awf2Workflow): Awf2Diagnostic[] {
         }
 
         if (!isPlausibleExpression(route.when)) {
-          diags.push(awf2Diag(
+          diags.push(workflowDiag(
             "workflow_expression_syntax",
             "error",
             `Invalid decision expression: ${route.when}`,
@@ -230,9 +230,9 @@ export function validateWorkflow(workflow: Awf2Workflow): Awf2Diagnostic[] {
         }
 
         if (isPlausibleExpression(route.when)) {
-          for (const ref of parseAwf2Expr(route.when).stageRefs()) {
+          for (const ref of parseWorkflowExpr(route.when).stageRefs()) {
             if (!stageIds.has(ref.stageId)) {
-              diags.push(awf2Diag(
+              diags.push(workflowDiag(
                 "workflow_expression_stage_ref",
                 "error",
                 `Expression in stage "${stage.id}" references unknown stage "${ref.stageId}".`,
@@ -248,9 +248,9 @@ export function validateWorkflow(workflow: Awf2Workflow): Awf2Diagnostic[] {
   // Global transition expression refs
   for (const t of workflow.transitions ?? []) {
     if (!t.when || !isPlausibleExpression(t.when)) continue;
-    for (const ref of parseAwf2Expr(t.when).stageRefs()) {
+    for (const ref of parseWorkflowExpr(t.when).stageRefs()) {
       if (!stageIds.has(ref.stageId)) {
-        diags.push(awf2Diag(
+        diags.push(workflowDiag(
           "workflow_expression_stage_ref",
           "error",
           `Expression on transition ${t.from} -> ${t.to} references unknown stage "${ref.stageId}".`,
@@ -266,7 +266,7 @@ export function validateWorkflow(workflow: Awf2Workflow): Awf2Diagnostic[] {
     const exitStages = workflow.stages.filter((s) => s.kind === "exit").map((s) => s.id);
 
     if (!exitStages.some((id) => reachable.has(id))) {
-      diags.push(awf2Diag(
+      diags.push(workflowDiag(
         "workflow_reachable_exit",
         "error",
         "No exit stage is reachable from start.",
@@ -275,7 +275,7 @@ export function validateWorkflow(workflow: Awf2Workflow): Awf2Diagnostic[] {
 
     for (const stage of workflow.stages) {
       if (!reachable.has(stage.id)) {
-        diags.push(awf2Diag(
+        diags.push(workflowDiag(
           "workflow_reachability",
           "error",
           `Stage "${stage.id}" is unreachable from start.`,
@@ -288,7 +288,7 @@ export function validateWorkflow(workflow: Awf2Workflow): Awf2Diagnostic[] {
   return diags;
 }
 
-export function validateWorkflowOrRaise(workflow: Awf2Workflow): Awf2Diagnostic[] {
+export function validateWorkflowOrRaise(workflow: WorkflowDefinition): WorkflowDiagnostic[] {
   const diags = validateWorkflow(workflow);
   const errors = diags.filter((d) => d.severity === "error");
   if (errors.length > 0) {

@@ -1,6 +1,6 @@
 workflow "AutoStatus" {
   version 2
-  goal "Test auto_status from AWF2"
+  goal "Test auto_status"
   start "implement"
 
   stage "implement" kind="llm" prompt="Write the code for: $goal"

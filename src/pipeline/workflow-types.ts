@@ -1,6 +1,6 @@
 import type { Severity, Diagnostic } from "./types.js";
 
-export type Awf2StageKind =
+export type WorkflowStageKind =
   | "exit"
   | "llm"
   | "tool"
@@ -10,32 +10,32 @@ export type Awf2StageKind =
   | "workspace.merge"
   | "workspace.cleanup";
 
-export type Awf2Retry = {
+export type WorkflowRetry = {
   max_attempts: number;
   backoff?: "none" | "fixed" | "exponential";
   delay?: string;
   max_delay?: string;
 };
 
-export type Awf2ModelProfile = {
+export type WorkflowModelProfile = {
   model?: string;
   provider?: string;
   reasoning_effort?: string;
 };
 
-export type Awf2Models = {
+export type WorkflowModels = {
   default?: string;
-  profile?: Record<string, Awf2ModelProfile>;
+  profile?: Record<string, WorkflowModelProfile>;
 };
 
-export type Awf2BaseStage = {
+export type WorkflowBaseStage = {
   id: string;
-  kind: Awf2StageKind;
-  retry?: Awf2Retry;
+  kind: WorkflowStageKind;
+  retry?: WorkflowRetry;
   model_profile?: string;
 };
 
-export type Awf2LlmStage = Awf2BaseStage & {
+export type WorkflowLlmStage = WorkflowBaseStage & {
   kind: "llm";
   prompt?: string;
   prompt_file?: string;
@@ -47,84 +47,84 @@ export type Awf2LlmStage = Awf2BaseStage & {
   response_key_base?: string;
 };
 
-export type Awf2ToolStage = Awf2BaseStage & {
+export type WorkflowToolStage = WorkflowBaseStage & {
   kind: "tool";
   command: string;
   cwd?: string;
   timeout?: string;
 };
 
-export type Awf2HumanOption = {
+export type WorkflowHumanOption = {
   key: string;
   label: string;
   to: string;
 };
 
-export type Awf2HumanStage = Awf2BaseStage & {
+export type WorkflowHumanStage = WorkflowBaseStage & {
   kind: "human";
   prompt: string;
-  options: Awf2HumanOption[];
+  options: WorkflowHumanOption[];
   require_feedback_on?: string[];
   details_from?: string;
   re_review?: boolean;
 };
 
-export type Awf2DecisionRoute = {
+export type WorkflowDecisionRoute = {
   when: string;
   to: string;
   priority?: number;
 };
 
-export type Awf2DecisionStage = Awf2BaseStage & {
+export type WorkflowDecisionStage = WorkflowBaseStage & {
   kind: "decision";
-  routes: Awf2DecisionRoute[];
+  routes: WorkflowDecisionRoute[];
 };
 
-export type Awf2ExitStage = Awf2BaseStage & { kind: "exit" };
+export type WorkflowExitStage = WorkflowBaseStage & { kind: "exit" };
 
-export type Awf2WorkspaceStage = Awf2BaseStage & {
+export type WorkflowWorkspaceStage = WorkflowBaseStage & {
   kind: "workspace.create" | "workspace.merge" | "workspace.cleanup";
   workspace_name?: string;
 };
 
-export type Awf2Stage =
-  | Awf2LlmStage
-  | Awf2ToolStage
-  | Awf2HumanStage
-  | Awf2DecisionStage
-  | Awf2ExitStage
-  | Awf2WorkspaceStage;
+export type WorkflowStage =
+  | WorkflowLlmStage
+  | WorkflowToolStage
+  | WorkflowHumanStage
+  | WorkflowDecisionStage
+  | WorkflowExitStage
+  | WorkflowWorkspaceStage;
 
-export type Awf2Transition = {
+export type WorkflowTransition = {
   from: string;
   to: string;
   when?: string;
   priority?: number;
 };
 
-export type Awf2Workflow = {
+export type WorkflowDefinition = {
   version: 2;
   name: string;
   goal?: string;
   start: string;
-  models?: Awf2Models;
-  stages: Awf2Stage[];
-  transitions?: Awf2Transition[];
+  models?: WorkflowModels;
+  stages: WorkflowStage[];
+  transitions?: WorkflowTransition[];
 };
 
 /**
- * AWF2-specific diagnostic type. Currently identical to the base `Diagnostic`,
- * but aliased to allow independent evolution (e.g., adding KDL source
- * locations) without changing AWF2 consumer signatures.
+ * Workflow-specific diagnostic type. Currently identical to the base
+ * `Diagnostic`, but aliased to allow independent evolution (e.g., adding
+ * KDL source locations) without changing consumer signatures.
  */
-export type Awf2Diagnostic = Diagnostic;
+export type WorkflowDiagnostic = Diagnostic;
 
-export function awf2Diag(
+export function workflowDiag(
   rule: string,
   severity: Severity,
   message: string,
   opts?: { node_id?: string; edge?: [string, string]; fix?: string },
-): Awf2Diagnostic {
+): WorkflowDiagnostic {
   const { node_id, edge, fix } = opts ?? {};
   return { rule, severity, message, node_id, edge, fix };
 }

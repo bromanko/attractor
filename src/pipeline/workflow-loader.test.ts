@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseWorkflowDefinition, workflowToGraph } from "./awf2-loader.js";
+import { parseWorkflowDefinition, workflowToGraph } from "./workflow-loader.js";
 
 describe("Workflow loader", () => {
   it("parses + validates + lowers Workflow to Graph", () => {

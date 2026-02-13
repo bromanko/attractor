@@ -30,20 +30,25 @@ Three layers, built bottom-up:
 ### Define a workflow in KDL syntax
 
 ```kdl
-digraph FeaturePipeline {
-    graph [goal="Implement and validate a feature"]
-    node [shape=box, timeout="900s"]
+workflow "FeaturePipeline" {
+  version 2
+  goal "Implement and validate a feature"
+  start "plan"
 
-    start     [shape=Mdiamond, label="Start"]
-    exit      [shape=Msquare, label="Exit"]
-    plan      [label="Plan", prompt="Plan the implementation for: $goal"]
-    implement [label="Implement", prompt="Implement the plan", goal_gate=true]
-    validate  [label="Validate", prompt="Run tests and verify correctness"]
-    gate      [shape=diamond, label="Tests passing?"]
+  stage "plan" kind="llm" prompt="Plan the implementation for: $goal"
+  stage "implement" kind="llm" prompt="Implement the plan" goal_gate=true
+  stage "validate" kind="llm" prompt="Run tests and verify correctness"
 
-    start -> plan -> implement -> validate -> gate
-    gate -> exit      [label="Yes", condition="outcome=success"]
-    gate -> implement [label="No", condition="outcome!=success"]
+  stage "gate" kind="decision" {
+    route when="outcome(\"validate\") == \"success\"" to="exit"
+    route when="true" to="implement"
+  }
+
+  stage "exit" kind="exit"
+
+  transition from="plan" to="implement"
+  transition from="implement" to="validate"
+  transition from="validate" to="gate"
 }
 ```
 
@@ -164,7 +169,7 @@ src/
 │   └── local-env.ts        Local execution environment
 └── pipeline/               Attractor Pipeline Engine
     ├── types.ts            Graph model, context, handlers, interviewers
-    ├── awf2-kdl-parser.ts  KDL workflow parser
+    ├── workflow-kdl-parser.ts  KDL workflow parser
     ├── validator.ts        Lint rules (13 built-in)
     ├── conditions.ts       Edge condition expression language
     ├── engine.ts           Core execution loop, edge selection, checkpoints

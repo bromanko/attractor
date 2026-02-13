@@ -1,5 +1,5 @@
 /**
- * AWF2 expression parser + lowering helpers.
+ * Workflow expression parser + lowering helpers.
  *
  * Supports:
  * - ==, !=
@@ -18,7 +18,7 @@ export type ExpressionStageRef = {
   stageId: string;
 };
 
-/** Result of compiling an AWF2 expression to engine conditions. */
+/** Result of compiling a workflow expression to engine conditions. */
 export type EngineConditions =
   | { kind: "unsatisfiable" }
   | { kind: "unconditional" }
@@ -440,7 +440,7 @@ function atomToEngineClause(atom: Atom): string | undefined {
 }
 
 /**
- * Compile an AWF2 expression into engine conditions.
+ * Compile a workflow expression into engine conditions.
  *
  * Returns a tagged union:
  * - `{ kind: "unsatisfiable" }` for expressions that are always false
@@ -470,15 +470,15 @@ function compileFromAst(ast: ExprNode): EngineConditions {
 }
 
 /**
- * Compile an AWF2 expression into engine conditions. Convenience wrapper.
+ * Compile a workflow expression into engine conditions. Convenience wrapper.
  *
  * Returns a tagged union:
  * - `{ kind: "unsatisfiable" }` for expressions that are always false
  * - `{ kind: "unconditional" }` for expressions that are always true
  * - `{ kind: "disjunction", clauses: [...] }` for actual conditions in DNF form
  */
-export function compileAwf2ExprToEngineConditions(expr: string): EngineConditions {
-  return parseAwf2Expr(expr).compile();
+export function compileExprToEngineConditions(expr: string): EngineConditions {
+  return parseWorkflowExpr(expr).compile();
 }
 
 function visit(node: ExprNode, out: ExpressionStageRef[]): void {
@@ -506,7 +506,7 @@ function visit(node: ExprNode, out: ExpressionStageRef[]): void {
   }
 }
 
-/** A parsed AWF2 expression. Parse once, query multiple times. */
+/** A parsed workflow expression. Parse once, query multiple times. */
 export interface ParsedExpression {
   /** Collect stage references (outcome/output/exists) from the expression. */
   stageRefs(): ExpressionStageRef[];
@@ -514,8 +514,8 @@ export interface ParsedExpression {
   compile(): EngineConditions;
 }
 
-/** Parse an AWF2 expression string. Throws on malformed input. */
-export function parseAwf2Expr(expr: string): ParsedExpression {
+/** Parse a workflow expression string. Throws on malformed input. */
+export function parseWorkflowExpr(expr: string): ParsedExpression {
   const ast = parseExpression(expr);
 
   let cachedRefs: ExpressionStageRef[] | undefined;
@@ -540,7 +540,7 @@ export function parseAwf2Expr(expr: string): ParsedExpression {
 
 /** Collect stage references from an expression string. Convenience wrapper. */
 export function collectExpressionStageRefs(expr: string): ExpressionStageRef[] {
-  return parseAwf2Expr(expr).stageRefs();
+  return parseWorkflowExpr(expr).stageRefs();
 }
 
 /** Syntax check helper. Returns true if `expr` parses without error. */

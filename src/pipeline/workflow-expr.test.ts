@@ -1,14 +1,14 @@
 import { describe, it, expect } from "vitest";
 import {
   collectExpressionStageRefs,
-  compileAwf2ExprToEngineConditions,
+  compileExprToEngineConditions,
   isPlausibleExpression,
   type EngineConditions,
-} from "./awf2-expr.js";
+} from "./workflow-expr.js";
 
 /** Compile and assert the result is a disjunction, returning its clauses. */
 function compileClauses(expr: string): string[] {
-  const result = compileAwf2ExprToEngineConditions(expr);
+  const result = compileExprToEngineConditions(expr);
   expect(result.kind).toBe("disjunction");
   return (result as Extract<EngineConditions, { kind: "disjunction" }>).clauses;
 }
@@ -216,13 +216,13 @@ describe("collectExpressionStageRefs", () => {
 
 describe("tokenizer edge cases", () => {
   it("rejects unterminated strings", () => {
-    expect(() => compileAwf2ExprToEngineConditions('outcome("build) == "ok"')).toThrow(
+    expect(() => compileExprToEngineConditions('outcome("build) == "ok"')).toThrow(
       /Unterminated string/,
     );
   });
 
   it("rejects unexpected characters", () => {
-    expect(() => compileAwf2ExprToEngineConditions('outcome("a") == "ok" @ foo')).toThrow(
+    expect(() => compileExprToEngineConditions('outcome("a") == "ok" @ foo')).toThrow(
       /Unexpected character/,
     );
   });
@@ -245,13 +245,13 @@ describe("tokenizer edge cases", () => {
   });
 
   it("rejects invalid number formats", () => {
-    expect(() => compileAwf2ExprToEngineConditions('output("a.v") == 1.2.3')).toThrow(
+    expect(() => compileExprToEngineConditions('output("a.v") == 1.2.3')).toThrow(
       /Invalid number/,
     );
   });
 
   it("rejects bare dash as unexpected character (no negative number literals)", () => {
-    expect(() => compileAwf2ExprToEngineConditions('output("a.v") == -42')).toThrow(
+    expect(() => compileExprToEngineConditions('output("a.v") == -42')).toThrow(
       /Unexpected character/,
     );
   });
@@ -263,41 +263,41 @@ describe("tokenizer edge cases", () => {
 
 describe("parser edge cases", () => {
   it("rejects missing rparen", () => {
-    expect(() => compileAwf2ExprToEngineConditions('(outcome("a") == "ok"')).toThrow(
+    expect(() => compileExprToEngineConditions('(outcome("a") == "ok"')).toThrow(
       /Expected rparen/,
     );
   });
 
   it("rejects unknown function names", () => {
-    expect(() => compileAwf2ExprToEngineConditions('status("a") == "ok"')).toThrow(
+    expect(() => compileExprToEngineConditions('status("a") == "ok"')).toThrow(
       /Unknown function/,
     );
   });
 
   it("rejects exists() with == operator", () => {
-    expect(() => compileAwf2ExprToEngineConditions('exists("a.key") == "yes"')).toThrow(
+    expect(() => compileExprToEngineConditions('exists("a.key") == "yes"')).toThrow(
       /exists.*does not support/,
     );
   });
 
   it("rejects exists() with != operator", () => {
-    expect(() => compileAwf2ExprToEngineConditions('exists("a.key") != "yes"')).toThrow(
+    expect(() => compileExprToEngineConditions('exists("a.key") != "yes"')).toThrow(
       /exists.*does not support/,
     );
   });
 
   it("rejects trailing tokens after complete expression", () => {
     expect(() =>
-      compileAwf2ExprToEngineConditions('outcome("a") == "ok" outcome("b") == "ok"'),
+      compileExprToEngineConditions('outcome("a") == "ok" outcome("b") == "ok"'),
     ).toThrow(/Unexpected token/);
   });
 
   it("rejects empty parens", () => {
-    expect(() => compileAwf2ExprToEngineConditions("()")).toThrow();
+    expect(() => compileExprToEngineConditions("()")).toThrow();
   });
 
   it("rejects single = (expected ==)", () => {
-    expect(() => compileAwf2ExprToEngineConditions('outcome("a") = "ok"')).toThrow(
+    expect(() => compileExprToEngineConditions('outcome("a") = "ok"')).toThrow(
       /Expected '=='/,
     );
   });
@@ -305,51 +305,51 @@ describe("parser edge cases", () => {
   it("rejects non-literal on RHS of comparison", () => {
     // RHS is an ident, not a string/number/boolean literal
     expect(() =>
-      compileAwf2ExprToEngineConditions('outcome("a") == outcome("b")'),
+      compileExprToEngineConditions('outcome("a") == outcome("b")'),
     ).toThrow(/Expected literal/);
   });
 
   it("rejects bare outcome() without comparison operator", () => {
-    expect(() => compileAwf2ExprToEngineConditions('outcome("build")')).toThrow(
+    expect(() => compileExprToEngineConditions('outcome("build")')).toThrow(
       /requires comparison/,
     );
   });
 
   it("rejects bare output() without comparison operator", () => {
-    expect(() => compileAwf2ExprToEngineConditions('output("build.key")')).toThrow(
+    expect(() => compileExprToEngineConditions('output("build.key")')).toThrow(
       /requires comparison/,
     );
   });
 
   it("rejects unexpected token in primary position (bare string literal)", () => {
-    expect(() => compileAwf2ExprToEngineConditions('"hello"')).toThrow(/Unexpected token/);
+    expect(() => compileExprToEngineConditions('"hello"')).toThrow(/Unexpected token/);
   });
 
   it("rejects unexpected token in primary position (bare number)", () => {
-    expect(() => compileAwf2ExprToEngineConditions("42")).toThrow(/Unexpected token/);
+    expect(() => compileExprToEngineConditions("42")).toThrow(/Unexpected token/);
   });
 
   it("rejects function name without lparen", () => {
-    expect(() => compileAwf2ExprToEngineConditions('outcome "a"')).toThrow(
+    expect(() => compileExprToEngineConditions('outcome "a"')).toThrow(
       /Expected lparen/,
     );
   });
 
   it("rejects function call with non-string argument", () => {
-    expect(() => compileAwf2ExprToEngineConditions("outcome(42) == \"ok\"")).toThrow(
+    expect(() => compileExprToEngineConditions("outcome(42) == \"ok\"")).toThrow(
       /Expected string/,
     );
   });
 
   it("rejects function call missing closing rparen", () => {
-    expect(() => compileAwf2ExprToEngineConditions('outcome("a" == "ok"')).toThrow(
+    expect(() => compileExprToEngineConditions('outcome("a" == "ok"')).toThrow(
       /Expected rparen/,
     );
   });
 });
 
 /* ------------------------------------------------------------------ */
-/*  NNF (negation normal form) via compileAwf2ExprToEngineConditions    */
+/*  NNF (negation normal form) via compileExprToEngineConditions    */
 /* ------------------------------------------------------------------ */
 
 describe("NNF conversion", () => {
@@ -419,17 +419,17 @@ describe("DNF expansion", () => {
       return `(outcome("${a}") == "ok" || outcome("${b}") == "ok")`;
     });
     const expr = pairs.join(" && ");
-    expect(() => compileAwf2ExprToEngineConditions(expr)).toThrow(
+    expect(() => compileExprToEngineConditions(expr)).toThrow(
       /DNF expansion exceeds 128 clauses/,
     );
   });
 });
 
 /* ------------------------------------------------------------------ */
-/*  compileAwf2ExprToEngineConditions                                   */
+/*  compileExprToEngineConditions                                   */
 /* ------------------------------------------------------------------ */
 
-describe("compileAwf2ExprToEngineConditions", () => {
+describe("compileExprToEngineConditions", () => {
   it("compiles conjunction to single engine condition", () => {
     expect(compileClauses(
       'outcome("a") == "success" && output("b.key") == "x"',
@@ -451,11 +451,11 @@ describe("compileAwf2ExprToEngineConditions", () => {
   });
 
   it("false literal → unsatisfiable", () => {
-    expect(compileAwf2ExprToEngineConditions("false")).toEqual({ kind: "unsatisfiable" });
+    expect(compileExprToEngineConditions("false")).toEqual({ kind: "unsatisfiable" });
   });
 
   it("true literal → unconditional", () => {
-    expect(compileAwf2ExprToEngineConditions("true")).toEqual({ kind: "unconditional" });
+    expect(compileExprToEngineConditions("true")).toEqual({ kind: "unconditional" });
   });
 
   it("!= operator lowers correctly", () => {
@@ -491,13 +491,13 @@ describe("compileAwf2ExprToEngineConditions", () => {
   });
 
   it("false in conjunction is absorbing", () => {
-    expect(compileAwf2ExprToEngineConditions('false && outcome("a") == "ok"')).toEqual({
+    expect(compileExprToEngineConditions('false && outcome("a") == "ok"')).toEqual({
       kind: "unsatisfiable",
     });
   });
 
   it("true in disjunction is absorbing", () => {
-    expect(compileAwf2ExprToEngineConditions('true || outcome("a") == "ok"')).toEqual({
+    expect(compileExprToEngineConditions('true || outcome("a") == "ok"')).toEqual({
       kind: "unconditional",
     });
   });

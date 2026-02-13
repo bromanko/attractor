@@ -1,12 +1,12 @@
 import { describe, it, expect } from "vitest";
-import type { Awf2Workflow, Awf2Transition, Awf2HumanStage, Awf2Diagnostic } from "./awf2-types.js";
+import type { WorkflowDefinition, WorkflowTransition, WorkflowHumanStage, WorkflowDiagnostic } from "./workflow-types.js";
 import type { Severity } from "./types.js";
-import { validateWorkflow, validateWorkflowOrRaise } from "./awf2-validator.js";
+import { validateWorkflow, validateWorkflowOrRaise } from "./workflow-validator.js";
 
-type BaseWorkflow = Awf2Workflow & { transitions: Awf2Transition[] };
+type BaseWorkflow = WorkflowDefinition & { transitions: WorkflowTransition[] };
 
 /** Assert that diagnostics contain a matching rule with the expected severity. */
-function expectDiag(diags: Awf2Diagnostic[], rule: string, severity: Severity): void {
+function expectDiag(diags: WorkflowDiagnostic[], rule: string, severity: Severity): void {
   const match = diags.find((d) => d.rule === rule);
   expect(match, `expected diagnostic "${rule}" to be present`).toBeDefined();
   expect(match!.severity).toBe(severity);
@@ -70,7 +70,7 @@ describe("Workflow validator", () => {
 
   it("rejects human stage with fewer than 2 options", () => {
     const wf = baseWorkflow();
-    const reviewStage = wf.stages.find((s) => s.id === "review") as Awf2HumanStage;
+    const reviewStage = wf.stages.find((s) => s.id === "review") as WorkflowHumanStage;
     reviewStage.options = [{ key: "a", label: "Approve", to: "exit" }];
     const diags = validateWorkflow(wf);
     expectDiag(diags, "workflow_human_options", "error");
@@ -78,7 +78,7 @@ describe("Workflow validator", () => {
   });
 
   it("requires decision catch-all", () => {
-    const wf: Awf2Workflow = {
+    const wf: WorkflowDefinition = {
       version: 2,
       name: "decision",
       start: "gate",
@@ -191,7 +191,7 @@ describe("Workflow validator", () => {
   });
 
   it("rejects tool stages with empty command", () => {
-    const wf: Awf2Workflow = {
+    const wf: WorkflowDefinition = {
       version: 2,
       name: "tool-test",
       start: "run",
@@ -217,7 +217,7 @@ describe("Workflow validator", () => {
     const wf = baseWorkflow();
     wf.transitions = [{ from: "plan", to: "review" }];
     // make human options loop forever
-    const reviewStage = wf.stages.find((s) => s.id === "review") as Awf2HumanStage;
+    const reviewStage = wf.stages.find((s) => s.id === "review") as WorkflowHumanStage;
     reviewStage.options = [
       { key: "r1", label: "Revise", to: "plan" },
       { key: "r2", label: "Revise again", to: "plan" },

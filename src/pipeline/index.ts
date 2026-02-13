@@ -58,26 +58,26 @@ export { applyStylesheet, parseStylesheet } from "./stylesheet.js";
 
 // KDL workflow format
 export type {
-  Awf2Workflow as WorkflowDefinition,
-  Awf2Stage as WorkflowStage,
-  Awf2StageKind as WorkflowStageKind,
-  Awf2LlmStage as LlmWorkflowStage,
-  Awf2ToolStage as ToolWorkflowStage,
-  Awf2HumanStage as HumanWorkflowStage,
-  Awf2DecisionStage as DecisionWorkflowStage,
-  Awf2ExitStage as ExitWorkflowStage,
-  Awf2WorkspaceStage as WorkspaceWorkflowStage,
-  Awf2HumanOption as HumanOption,
-  Awf2DecisionRoute as DecisionRoute,
-  Awf2Transition as WorkflowTransition,
-  Awf2Retry as RetryPolicy,
-  Awf2Models as WorkflowModels,
-  Awf2ModelProfile as WorkflowModelProfile,
-  Awf2Diagnostic as WorkflowDiagnostic,
-} from "./awf2-types.js";
-export { validateWorkflow, validateWorkflowOrRaise } from "./awf2-validator.js";
-export { parseWorkflowKdl } from "./awf2-kdl-parser.js";
-export { parseWorkflowDefinition, workflowToGraph, parseWorkflowToGraph } from "./awf2-loader.js";
+  WorkflowDefinition,
+  WorkflowStage,
+  WorkflowStageKind,
+  WorkflowLlmStage as LlmWorkflowStage,
+  WorkflowToolStage as ToolWorkflowStage,
+  WorkflowHumanStage as HumanWorkflowStage,
+  WorkflowDecisionStage as DecisionWorkflowStage,
+  WorkflowExitStage as ExitWorkflowStage,
+  WorkflowWorkspaceStage as WorkspaceWorkflowStage,
+  WorkflowHumanOption as HumanOption,
+  WorkflowDecisionRoute as DecisionRoute,
+  WorkflowTransition,
+  WorkflowRetry as RetryPolicy,
+  WorkflowModels,
+  WorkflowModelProfile,
+  WorkflowDiagnostic,
+} from "./workflow-types.js";
+export { validateWorkflow, validateWorkflowOrRaise } from "./workflow-validator.js";
+export { parseWorkflowKdl } from "./workflow-kdl-parser.js";
+export { parseWorkflowDefinition, workflowToGraph, parseWorkflowToGraph } from "./workflow-loader.js";
 
 // Pi SDK Backend
 export { PiBackend } from "../pi-backend.js";

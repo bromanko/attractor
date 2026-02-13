@@ -1,14 +1,14 @@
 import { extname } from "node:path";
 import type { Graph, GraphNode, GraphEdge } from "./types.js";
-import type { Awf2Workflow, Awf2Stage, Awf2Transition } from "./awf2-types.js";
-import { parseWorkflowKdl } from "./awf2-kdl-parser.js";
-import { validateWorkflowOrRaise } from "./awf2-validator.js";
-import { compileAwf2ExprToEngineConditions, type EngineConditions } from "./awf2-expr.js";
+import type { WorkflowDefinition, WorkflowStage, WorkflowTransition } from "./workflow-types.js";
+import { parseWorkflowKdl } from "./workflow-kdl-parser.js";
+import { validateWorkflowOrRaise } from "./workflow-validator.js";
+import { compileExprToEngineConditions, type EngineConditions } from "./workflow-expr.js";
 
 export type LoadedWorkflow = {
   format: "kdl";
   graph: Graph;
-  workflow: Awf2Workflow;
+  workflow: WorkflowDefinition;
 };
 
 function encodeOrderWeight(priority: number | undefined, index: number, total: number): number {
@@ -20,7 +20,7 @@ function toEdgeConditions(expr: string | undefined): Array<string | undefined> {
   if (!expr) return [undefined];
   const trimmed = expr.trim();
   if (!trimmed || trimmed === "true") return [undefined];
-  const result: EngineConditions = compileAwf2ExprToEngineConditions(trimmed);
+  const result: EngineConditions = compileExprToEngineConditions(trimmed);
   switch (result.kind) {
     case "unsatisfiable":
       return [];
@@ -31,7 +31,7 @@ function toEdgeConditions(expr: string | undefined): Array<string | undefined> {
   }
 }
 
-function stageToGraphNode(stage: Awf2Stage): GraphNode {
+function stageToGraphNode(stage: WorkflowStage): GraphNode {
   const attrs: Record<string, unknown> = {};
 
   if (stage.kind === "llm") {
@@ -70,8 +70,8 @@ function stageToGraphNode(stage: Awf2Stage): GraphNode {
   return { id: stage.id, attrs };
 }
 
-function addTransitionEdges(edges: GraphEdge[], transitions: Awf2Transition[]): void {
-  const bySource = new Map<string, Awf2Transition[]>();
+function addTransitionEdges(edges: GraphEdge[], transitions: WorkflowTransition[]): void {
+  const bySource = new Map<string, WorkflowTransition[]>();
   for (const t of transitions) {
     const list = bySource.get(t.from) ?? [];
     list.push(t);
@@ -96,7 +96,7 @@ function addTransitionEdges(edges: GraphEdge[], transitions: Awf2Transition[]): 
   }
 }
 
-export function workflowToGraph(workflow: Awf2Workflow): Graph {
+export function workflowToGraph(workflow: WorkflowDefinition): Graph {
   const startNodeId = "__start__";
 
   const nodes: GraphNode[] = [
@@ -153,7 +153,7 @@ export function workflowToGraph(workflow: Awf2Workflow): Graph {
   };
 }
 
-export function parseWorkflowDefinition(source: string): Awf2Workflow {
+export function parseWorkflowDefinition(source: string): WorkflowDefinition {
   const workflow = parseWorkflowKdl(source);
   validateWorkflowOrRaise(workflow);
   return workflow;

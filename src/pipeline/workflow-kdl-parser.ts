@@ -1,11 +1,11 @@
 import type {
-  Awf2DecisionRoute,
-  Awf2HumanOption,
-  Awf2ModelProfile,
-  Awf2Stage,
-  Awf2Transition,
-  Awf2Workflow,
-} from "./awf2-types.js";
+  WorkflowDecisionRoute,
+  WorkflowHumanOption,
+  WorkflowModelProfile,
+  WorkflowStage,
+  WorkflowTransition,
+  WorkflowDefinition,
+} from "./workflow-types.js";
 
 type Scalar = string | number | boolean;
 
@@ -262,9 +262,9 @@ function propBoolean(node: KdlNode, key: string): boolean | undefined {
   return typeof val === "boolean" ? val : undefined;
 }
 
-function parseModels(children: KdlNode[]): Awf2Workflow["models"] {
-  const models: NonNullable<Awf2Workflow["models"]> = {};
-  const profiles: Record<string, Awf2ModelProfile> = {};
+function parseModels(children: KdlNode[]): WorkflowDefinition["models"] {
+  const models: NonNullable<WorkflowDefinition["models"]> = {};
+  const profiles: Record<string, WorkflowModelProfile> = {};
 
   for (const node of children) {
     if (node.name === "default") {
@@ -288,7 +288,7 @@ function parseModels(children: KdlNode[]): Awf2Workflow["models"] {
   return Object.keys(models).length > 0 ? models : undefined;
 }
 
-function parseRetry(children: KdlNode[]): Awf2Stage["retry"] {
+function parseRetry(children: KdlNode[]): WorkflowStage["retry"] {
   const retryNode = children.find((c) => c.name === "retry");
   if (!retryNode) return undefined;
 
@@ -311,8 +311,8 @@ function parseRetry(children: KdlNode[]): Awf2Stage["retry"] {
   };
 }
 
-function parseHumanOptions(stageNode: KdlNode): Awf2HumanOption[] {
-  const options: Awf2HumanOption[] = [];
+function parseHumanOptions(stageNode: KdlNode): WorkflowHumanOption[] {
+  const options: WorkflowHumanOption[] = [];
   for (const child of stageNode.children) {
     if (child.name !== "option") continue;
     options.push({
@@ -324,8 +324,8 @@ function parseHumanOptions(stageNode: KdlNode): Awf2HumanOption[] {
   return options;
 }
 
-function parseDecisionRoutes(stageNode: KdlNode): Awf2DecisionRoute[] {
-  const routes: Awf2DecisionRoute[] = [];
+function parseDecisionRoutes(stageNode: KdlNode): WorkflowDecisionRoute[] {
+  const routes: WorkflowDecisionRoute[] = [];
   for (const child of stageNode.children) {
     if (child.name !== "route") continue;
     const when = propString(child, "when") ?? "";
@@ -335,9 +335,9 @@ function parseDecisionRoutes(stageNode: KdlNode): Awf2DecisionRoute[] {
   return routes;
 }
 
-function parseStage(stageNode: KdlNode): Awf2Stage {
+function parseStage(stageNode: KdlNode): WorkflowStage {
   const id = scalarString(stageNode, 0, "stage id");
-  const kind = propString(stageNode, "kind") as Awf2Stage["kind"] | undefined;
+  const kind = propString(stageNode, "kind") as WorkflowStage["kind"] | undefined;
   if (!kind) {
     throw new Error(`KDL conversion error: stage "${id}" requires kind="..."`);
   }
@@ -428,8 +428,8 @@ function parseStage(stageNode: KdlNode): Awf2Stage {
   throw new Error(`KDL conversion error: unknown stage kind "${kind}" for stage "${id}"`);
 }
 
-function parseTransitions(nodes: KdlNode[]): Awf2Transition[] {
-  const transitions: Awf2Transition[] = [];
+function parseTransitions(nodes: KdlNode[]): WorkflowTransition[] {
+  const transitions: WorkflowTransition[] = [];
   for (const node of nodes) {
     if (node.name !== "transition") continue;
     const from = propString(node, "from") ?? "";
@@ -444,7 +444,7 @@ function parseTransitions(nodes: KdlNode[]): Awf2Transition[] {
   return transitions;
 }
 
-export function parseWorkflowKdl(source: string): Awf2Workflow {
+export function parseWorkflowKdl(source: string): WorkflowDefinition {
   const parser = new Parser(tokenize(source));
   const nodes = parser.parseNodes(false);
 
@@ -470,7 +470,7 @@ export function parseWorkflowKdl(source: string): Awf2Workflow {
   const modelsNode = root.children.find((c) => c.name === "models");
   const stageNodes = root.children.filter((c) => c.name === "stage");
 
-  const workflow: Awf2Workflow = {
+  const workflow: WorkflowDefinition = {
     version: 2,
     name,
     goal: goalNode ? scalarString(goalNode, 0, "workflow.goal") : undefined,
