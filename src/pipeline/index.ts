@@ -59,6 +59,27 @@ export type { ToolFailureClass, ToolFailureDetails } from "./tool-failure.js";
 // Stylesheet
 export { applyStylesheet, parseStylesheet } from "./stylesheet.js";
 
+// AWF2 (KDL workflow format v2)
+export type {
+  Awf2Workflow,
+  Awf2Stage,
+  Awf2StageKind,
+  Awf2LlmStage,
+  Awf2ToolStage,
+  Awf2HumanStage,
+  Awf2DecisionStage,
+  Awf2ExitStage,
+  Awf2WorkspaceStage,
+  Awf2HumanOption,
+  Awf2DecisionRoute,
+  Awf2Transition,
+  Awf2Retry,
+  Awf2Models,
+  Awf2ModelProfile,
+  Awf2Diagnostic,
+} from "./awf2-types.js";
+export { validateAwf2, validateAwf2OrRaise } from "./awf2-validator.js";
+
 // Pi SDK Backend
 export { PiBackend } from "../pi-backend.js";
 export type { PiBackendConfig } from "../pi-backend.js";
