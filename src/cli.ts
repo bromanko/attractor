@@ -12,6 +12,7 @@ import { readFile } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { existsSync } from "node:fs";
+
 import {
   runPipeline,
   PiBackend,
@@ -19,6 +20,7 @@ import {
   parseWorkflowKdl,
   validateWorkflow,
   workflowToGraph,
+  graphToDot,
 } from "./pipeline/index.js";
 import type {
   PipelineEvent,
@@ -30,6 +32,8 @@ import type {
   Graph,
   WorkflowDefinition,
 } from "./pipeline/index.js";
+import type { ShowFormat } from "./extensions/attractor-command.js";
+import { hasGraphEasy, runGraphEasy } from "./pipeline/graph-easy.js";
 import {
   AuthStorage,
   ModelRegistry,
@@ -61,6 +65,7 @@ attractor — KDL workflow runner
 Usage:
   attractor run <pipeline.awf.kdl> [options]   Run a pipeline
   attractor validate <pipeline.awf.kdl>        Validate a pipeline graph
+  attractor show <pipeline.awf.kdl> [options]  Visualize a pipeline graph
   attractor list-models [--provider name]  Show available models
 
 Run options:
@@ -74,6 +79,10 @@ Run options:
   --resume [checkpoint]  Resume from checkpoint (default: <logs>/checkpoint.json)
   --dry-run              Validate and print graph without executing
   --verbose              Show detailed event output
+
+Show options:
+  --format <fmt>         Output format: ascii | boxart | dot (default: auto)
+                         "auto" uses boxart if graph-easy is found, else dot
 
 Auth:
   Uses pi's AuthStorage for credentials. Set ANTHROPIC_API_KEY in env,
@@ -176,6 +185,56 @@ async function cmdValidate(filePath: string): Promise<void> {
   console.log();
   console.log(`${errors.length} error(s), ${warnings.length} warning(s)`);
   if (errors.length > 0) process.exit(1);
+}
+
+type CliShowFormat = ShowFormat | "auto";
+
+
+export async function cmdShow(
+  filePath: string,
+  args: Record<string, string | boolean>,
+): Promise<void> {
+  if (!isKdlWorkflowPath(filePath)) {
+    throw new Error("Only .awf.kdl workflow files are supported.");
+  }
+  const text = await readFile(resolve(filePath), "utf-8");
+  const { graph } = parseWorkflowText(filePath, text);
+  const dot = graphToDot(graph);
+
+  const VALID_FORMATS: Set<string> = new Set(["ascii", "boxart", "dot", "auto"]);
+  const rawFormat = typeof args.format === "string" ? args.format : "auto";
+  if (!VALID_FORMATS.has(rawFormat)) {
+    console.error(
+      `Invalid --format value: "${rawFormat}". Must be one of: ascii, boxart, dot, auto`,
+    );
+    process.exit(1);
+    return; // unreachable at runtime, but guards control flow when exit is mocked in tests
+  }
+  let format = rawFormat as CliShowFormat;
+  const graphEasyAvailable = await hasGraphEasy();
+
+  if (format === "auto") {
+    format = graphEasyAvailable ? "boxart" : "dot";
+  }
+
+  if (format === "dot") {
+    process.stdout.write(dot);
+    return;
+  }
+
+  // ascii or boxart — requires graph-easy
+  if (!graphEasyAvailable) {
+    console.error(
+      "Error: graph-easy is not installed. Install it or use --format dot.\n" +
+      "  nix: nix-shell -p graph-easy\n" +
+      "  brew: brew install graph-easy\n" +
+      "  apt: sudo apt install libgraph-easy-perl",
+    );
+    process.exit(1);
+  }
+
+  const output = await runGraphEasy(dot, format);
+  process.stdout.write(output);
 }
 
 export async function cmdRun(
@@ -503,6 +562,14 @@ async function main(): Promise<void> {
         usage();
       }
       await cmdValidate(args._file as string);
+      break;
+    }
+    case "show": {
+      if (!args._file) {
+        console.error("Error: show requires a workflow file path (.awf.kdl)");
+        usage();
+      }
+      await cmdShow(args._file as string, args);
       break;
     }
     case "list-models": {
