@@ -231,7 +231,7 @@ describe("defaultParseOutcome", () => {
     expect(outcome.failure_reason).toBe("Bad code");
   });
 
-  it("honours auto_status='true' as DOT string", () => {
+  it("honours auto_status='true' as string", () => {
     const node = makeNode({ attrs: { label: "Review", auto_status: "true" } });
     const outcome = defaultParseOutcome(
       "Issues found. [STATUS: fail]",
@@ -251,7 +251,7 @@ describe("defaultParseOutcome", () => {
     expect(outcome.status).toBe("success");
   });
 
-  it("honours auto_status='false' as DOT string for non-box shapes", () => {
+  it("honours auto_status='false' as string for non-box shapes", () => {
     const node = makeNode({ attrs: { label: "Gate", shape: "diamond", auto_status: "false" } });
     const outcome = defaultParseOutcome("Issues found. [STATUS: fail]", node, ctx);
     expect(outcome.status).toBe("success");

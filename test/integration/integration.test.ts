@@ -886,7 +886,7 @@ describe("CLI", () => {
 });
 
 // ===========================================================================
-// 20. auto_status from DOT → status marker parsing (end-to-end)
+// 20. auto_status → status marker parsing (end-to-end)
 // ===========================================================================
 
 describe("auto_status parsing end-to-end", () => {

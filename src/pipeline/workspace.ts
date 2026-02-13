@@ -9,10 +9,10 @@
  * Workspace metadata is stored in pipeline context under the "workspace.*" namespace
  * and persisted in a registry file at <repo-root>/.jj/workspace-registry.json.
  *
- * Usage in DOT:
- *   setup  [type="workspace.create", workspace_name="my-feature"]
- *   merge  [type="workspace.merge"]
- *   clean  [type="workspace.cleanup"]
+ * Usage:
+ *   stage "setup" kind="tool" type="workspace.create" workspace_name="my-feature"
+ *   stage "merge" kind="tool" type="workspace.merge"
+ *   stage "clean" kind="tool" type="workspace.cleanup"
  */
 
 import { execFile } from "node:child_process";

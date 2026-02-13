@@ -12,7 +12,7 @@ import type { GraphNode } from "./types.js";
  * because LLMs that make code changes are unreliable self-assessors.  Only
  * verification stages — reviews, checks — should determine pass/fail.
  *
- * A node can opt in explicitly with `auto_status=true` (or the DOT string
+ * A node can opt in explicitly with `auto_status=true` (or the string
  * `"true"`).  All non-codergen node types always honour markers.
  */
 export function shouldParseStatusMarkers(node: GraphNode): boolean {

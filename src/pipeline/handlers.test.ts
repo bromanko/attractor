@@ -316,7 +316,7 @@ describe("WaitForHumanHandler", () => {
     expect(pendingReReviews["human_review"]).toBeUndefined();
   });
 
-  it("does not set re-review context when re_review=\"false\" (string from quoted DOT attr)", async () => {
+  it("does not set re-review context when re_review=\"false\" (string from quoted attr)", async () => {
     const interviewer: Interviewer = {
       async ask(question: Question): Promise<Answer> {
         if (question.type === "multiple_choice") {
@@ -337,7 +337,7 @@ describe("WaitForHumanHandler", () => {
       ],
     });
 
-    // String "false" can arrive from quoted DOT attributes: re_review="false"
+    // String "false" can arrive from quoted attributes: re_review="false"
     const outcome = await handler.execute(makeHumanNode({ re_review: "false" }), context, graph, ".");
     const pendingReReviews = outcome.context_updates?.[HUMAN_GATE_KEYS.PENDING_RE_REVIEWS] as Record<string, string[]>;
     expect(pendingReReviews).toBeDefined();

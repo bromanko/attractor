@@ -18,7 +18,7 @@ describe("shouldParseStatusMarkers", () => {
     expect(shouldParseStatusMarkers(node)).toBe(true);
   });
 
-  it("returns true when auto_status='true' (DOT string)", () => {
+  it("returns true when auto_status='true' (string)", () => {
     const node = makeNode({ attrs: { label: "X", auto_status: "true" } });
     expect(shouldParseStatusMarkers(node)).toBe(true);
   });
@@ -28,7 +28,7 @@ describe("shouldParseStatusMarkers", () => {
     expect(shouldParseStatusMarkers(node)).toBe(false);
   });
 
-  it("returns false when auto_status='false' (DOT string)", () => {
+  it("returns false when auto_status='false' (string)", () => {
     const node = makeNode({ attrs: { label: "X", auto_status: "false" } });
     expect(shouldParseStatusMarkers(node)).toBe(false);
   });

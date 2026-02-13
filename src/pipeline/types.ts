@@ -31,8 +31,8 @@ export type NodeAttrs = {
    * this gate if the revised work tries to reach an approve target without
    * passing through the gate again.
    *
-   * Accepts `boolean` or the string `"false"` / `"true"` (which DOT parsers
-   * emit for quoted attribute values).
+   * Accepts `boolean` or the string `"false"` / `"true"` (which parsers
+   * may emit for quoted attribute values).
    */
   re_review?: boolean | string;
   [key: string]: unknown;

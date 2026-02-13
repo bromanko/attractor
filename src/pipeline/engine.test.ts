@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { mkdtemp, readFile, access } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { runPipeline } from "./engine.js";
-import { parseDot } from "./dot-parser.js";
+import { graph } from "./test-graph-builder.js";
 import type { CodergenBackend, Outcome, PipelineEvent, Interviewer, Question, Answer, Option } from "./types.js";
 import { Context } from "./types.js";
 
@@ -38,18 +38,21 @@ function outcomeBackend(outcome: Outcome): CodergenBackend {
 
 describe("Pipeline Engine", () => {
   it("executes a linear 3-node pipeline end-to-end", async () => {
-    const graph = parseDot(`
-      digraph Test {
-        graph [goal="Test"]
-        start [shape=Mdiamond]
-        exit [shape=Msquare]
-        work [shape=box, prompt="Do work"]
-        start -> work -> exit
-      }
-    `);
+    const g = graph({
+      attrs: { goal: "Test" },
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "work", shape: "box", prompt: "Do work" },
+      ],
+      edges: [
+        { from: "start", to: "work" },
+        { from: "work", to: "exit" },
+      ],
+    });
 
     const logsRoot = await tempDir();
-    const result = await runPipeline({ graph, logsRoot, backend: successBackend });
+    const result = await runPipeline({ graph: g, logsRoot, backend: successBackend });
 
     expect(result.status).toBe("success");
     expect(result.completedNodes).toContain("start");
@@ -58,18 +61,21 @@ describe("Pipeline Engine", () => {
   });
 
   it("writes artifacts to log directory", async () => {
-    const graph = parseDot(`
-      digraph Test {
-        graph [goal="Test artifacts"]
-        start [shape=Mdiamond]
-        exit [shape=Msquare]
-        plan [shape=box, prompt="Plan the work"]
-        start -> plan -> exit
-      }
-    `);
+    const g = graph({
+      attrs: { goal: "Test artifacts" },
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "plan", shape: "box", prompt: "Plan the work" },
+      ],
+      edges: [
+        { from: "start", to: "plan" },
+        { from: "plan", to: "exit" },
+      ],
+    });
 
     const logsRoot = await tempDir();
-    await runPipeline({ graph, logsRoot, backend: successBackend });
+    await runPipeline({ graph: g, logsRoot, backend: successBackend });
 
     const promptFile = await readFile(join(logsRoot, "plan", "prompt.md"), "utf-8");
     expect(promptFile).toBe("Plan the work");
@@ -83,27 +89,28 @@ describe("Pipeline Engine", () => {
   });
 
   it("executes conditional branching (success/fail paths)", async () => {
-    const graph = parseDot(`
-      digraph Test {
-        graph [goal="Test branching"]
-        start [shape=Mdiamond]
-        exit [shape=Msquare]
-        work [shape=box, prompt="Do work"]
-        gate [shape=diamond]
-        fix [shape=box, prompt="Fix issues"]
-
-        start -> work -> gate
-        gate -> exit [condition="outcome=success"]
-        gate -> fix [condition="outcome!=success"]
-        fix -> exit
-      }
-    `);
+    const g = graph({
+      attrs: { goal: "Test branching" },
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "work", shape: "box", prompt: "Do work" },
+        { id: "gate", shape: "diamond" },
+        { id: "fix", shape: "box", prompt: "Fix issues" },
+      ],
+      edges: [
+        { from: "start", to: "work" },
+        { from: "work", to: "gate" },
+        { from: "gate", to: "exit", condition: "outcome=success" },
+        { from: "gate", to: "fix", condition: "outcome!=success" },
+        { from: "fix", to: "exit" },
+      ],
+    });
 
     const logsRoot = await tempDir();
-    const result = await runPipeline({ graph, logsRoot, backend: successBackend });
+    const result = await runPipeline({ graph: g, logsRoot, backend: successBackend });
 
     expect(result.status).toBe("success");
-    // Conditional handler returns success, so gate -> exit
     expect(result.completedNodes).toContain("exit");
   });
 
@@ -119,38 +126,42 @@ describe("Pipeline Engine", () => {
       },
     };
 
-    const graph = parseDot(`
-      digraph Test {
-        graph [goal="Test goal gate"]
-        start [shape=Mdiamond]
-        exit [shape=Msquare]
-        implement [shape=box, prompt="Implement", goal_gate=true]
-
-        start -> implement -> exit
-      }
-    `);
+    const g = graph({
+      attrs: { goal: "Test goal gate" },
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "implement", shape: "box", prompt: "Implement", goal_gate: true },
+      ],
+      edges: [
+        { from: "start", to: "implement" },
+        { from: "implement", to: "exit" },
+      ],
+    });
 
     const logsRoot = await tempDir();
-    const result = await runPipeline({ graph, logsRoot, backend: failingBackend });
+    const result = await runPipeline({ graph: g, logsRoot, backend: failingBackend });
 
-    // Goal gate not satisfied → pipeline fails
     expect(result.status).toBe("fail");
   });
 
   it("emits events during execution", async () => {
-    const graph = parseDot(`
-      digraph Test {
-        start [shape=Mdiamond]
-        exit [shape=Msquare]
-        work [shape=box, prompt="Work"]
-        start -> work -> exit
-      }
-    `);
+    const g = graph({
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "work", shape: "box", prompt: "Work" },
+      ],
+      edges: [
+        { from: "start", to: "work" },
+        { from: "work", to: "exit" },
+      ],
+    });
 
     const events: PipelineEvent[] = [];
     const logsRoot = await tempDir();
     await runPipeline({
-      graph,
+      graph: g,
       logsRoot,
       backend: successBackend,
       onEvent: (e) => events.push(e),
@@ -165,27 +176,29 @@ describe("Pipeline Engine", () => {
   });
 
   it("saves and can resume from checkpoints", async () => {
-    const graph = parseDot(`
-      digraph Test {
-        start [shape=Mdiamond]
-        exit [shape=Msquare]
-        a [shape=box, prompt="A"]
-        b [shape=box, prompt="B"]
-        start -> a -> b -> exit
-      }
-    `);
+    const g = graph({
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "a", shape: "box", prompt: "A" },
+        { id: "b", shape: "box", prompt: "B" },
+      ],
+      edges: [
+        { from: "start", to: "a" },
+        { from: "a", to: "b" },
+        { from: "b", to: "exit" },
+      ],
+    });
 
     const logsRoot = await tempDir();
-    await runPipeline({ graph, logsRoot, backend: successBackend });
+    await runPipeline({ graph: g, logsRoot, backend: successBackend });
 
-    // Verify checkpoint was written
     const cpJson = await readFile(join(logsRoot, "checkpoint.json"), "utf-8");
     const checkpoint = JSON.parse(cpJson);
     expect(checkpoint.completed_nodes.length).toBeGreaterThan(0);
 
-    // Resume from checkpoint
     const logsRoot2 = await tempDir();
-    const result2 = await runPipeline({ graph, logsRoot: logsRoot2, backend: successBackend, checkpoint });
+    const result2 = await runPipeline({ graph: g, logsRoot: logsRoot2, backend: successBackend, checkpoint });
     expect(result2.status).toBe("success");
   });
 
@@ -200,66 +213,71 @@ describe("Pipeline Engine", () => {
       },
     };
 
-    const graph = parseDot(`
-      digraph Test {
-        start [shape=Mdiamond]
-        exit [shape=Msquare]
-        a [shape=box, prompt="A"]
-        b [shape=box, prompt="B"]
-        start -> a -> b -> exit
-      }
-    `);
+    const g = graph({
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "a", shape: "box", prompt: "A" },
+        { id: "b", shape: "box", prompt: "B" },
+      ],
+      edges: [
+        { from: "start", to: "a" },
+        { from: "a", to: "b" },
+        { from: "b", to: "exit" },
+      ],
+    });
 
     const logsRoot = await tempDir();
-    await runPipeline({ graph, logsRoot, backend: contextBackend });
+    await runPipeline({ graph: g, logsRoot, backend: contextBackend });
 
     expect(capturedContext).toBeDefined();
     expect(capturedContext!["last_stage"]).toBe("a");
   });
 
   it("edge selection: condition match wins over weight", async () => {
-    const graph = parseDot(`
-      digraph Test {
-        start [shape=Mdiamond]
-        exit [shape=Msquare]
-        work [shape=box, prompt="Work"]
-        via_condition [shape=box, prompt="Via condition"]
-        via_weight [shape=box, prompt="Via weight"]
-
-        start -> work
-        work -> via_weight [weight=100]
-        work -> via_condition [condition="outcome=success"]
-        via_condition -> exit
-        via_weight -> exit
-      }
-    `);
+    const g = graph({
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "work", shape: "box", prompt: "Work" },
+        { id: "via_condition", shape: "box", prompt: "Via condition" },
+        { id: "via_weight", shape: "box", prompt: "Via weight" },
+      ],
+      edges: [
+        { from: "start", to: "work" },
+        { from: "work", to: "via_weight", weight: 100 },
+        { from: "work", to: "via_condition", condition: "outcome=success" },
+        { from: "via_condition", to: "exit" },
+        { from: "via_weight", to: "exit" },
+      ],
+    });
 
     const logsRoot = await tempDir();
-    const result = await runPipeline({ graph, logsRoot, backend: successBackend });
+    const result = await runPipeline({ graph: g, logsRoot, backend: successBackend });
 
-    // Condition match should win
     expect(result.completedNodes).toContain("via_condition");
   });
 
   it("edge selection: weight breaks ties for unconditional edges", async () => {
-    const graph = parseDot(`
-      digraph Test {
-        start [shape=Mdiamond]
-        exit [shape=Msquare]
-        work [shape=box, prompt="Work"]
-        low [shape=box, prompt="Low"]
-        high [shape=box, prompt="High"]
-
-        start -> work
-        work -> low [weight=1]
-        work -> high [weight=10]
-        low -> exit
-        high -> exit
-      }
-    `);
+    const g = graph({
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "work", shape: "box", prompt: "Work" },
+        { id: "low", shape: "box", prompt: "Low" },
+        { id: "high", shape: "box", prompt: "High" },
+      ],
+      edges: [
+        { from: "start", to: "work" },
+        { from: "work", to: "low", weight: 1 },
+        { from: "work", to: "high", weight: 10 },
+        { from: "low", to: "exit" },
+        { from: "high", to: "exit" },
+      ],
+    });
 
     const logsRoot = await tempDir();
-    const result = await runPipeline({ graph, logsRoot, backend: successBackend });
+    const result = await runPipeline({ graph: g, logsRoot, backend: successBackend });
 
     expect(result.completedNodes).toContain("high");
   });
@@ -273,56 +291,60 @@ describe("Pipeline Engine", () => {
       },
     };
 
-    const graph = parseDot(`
-      digraph Test {
-        graph [goal="Build a REST API"]
-        start [shape=Mdiamond]
-        exit [shape=Msquare]
-        work [shape=box, prompt="Implement: $goal"]
-        start -> work -> exit
-      }
-    `);
+    const g = graph({
+      attrs: { goal: "Build a REST API" },
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "work", shape: "box", prompt: "Implement: $goal" },
+      ],
+      edges: [
+        { from: "start", to: "work" },
+        { from: "work", to: "exit" },
+      ],
+    });
 
     const logsRoot = await tempDir();
-    await runPipeline({ graph, logsRoot, backend: captureBackend });
+    await runPipeline({ graph: g, logsRoot, backend: captureBackend });
 
     expect(capturedPrompt).toBe("Implement: Build a REST API");
   });
 
   it("handles pipeline with 10+ nodes", async () => {
-    const nodeDecls = Array.from({ length: 10 }, (_, i) =>
-      `n${i} [shape=box, prompt="Step ${i}"]`
-    ).join("\n");
-    const chain = ["start", ...Array.from({ length: 10 }, (_, i) => `n${i}`), "exit"].join(" -> ");
+    const nodes = [
+      { id: "start", shape: "Mdiamond" },
+      { id: "exit", shape: "Msquare" },
+      ...Array.from({ length: 10 }, (_, i) => ({
+        id: `n${i}`, shape: "box", prompt: `Step ${i}`,
+      })),
+    ];
 
-    const graph = parseDot(`
-      digraph Big {
-        start [shape=Mdiamond]
-        exit [shape=Msquare]
-        ${nodeDecls}
-        ${chain}
-      }
-    `);
+    const chain = ["start", ...Array.from({ length: 10 }, (_, i) => `n${i}`), "exit"];
+    const edges = chain.slice(0, -1).map((from, i) => ({ from, to: chain[i + 1] }));
+
+    const g = graph({ nodes, edges });
 
     const logsRoot = await tempDir();
-    const result = await runPipeline({ graph, logsRoot, backend: successBackend });
+    const result = await runPipeline({ graph: g, logsRoot, backend: successBackend });
 
     expect(result.status).toBe("success");
-    expect(result.completedNodes.length).toBe(12); // start + 10 nodes + exit
+    expect(result.completedNodes.length).toBe(12);
   });
 
   it("stops pipeline when non-routing node fails with no failure edge", async () => {
-    const graph = parseDot(`
-      digraph G {
-        start [shape=Mdiamond]
-        exit  [shape=Msquare]
-        setup [shape=box]
-        work  [shape=box]
-        start -> setup
-        setup -> work
-        work  -> exit
-      }
-    `);
+    const g = graph({
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "setup", shape: "box" },
+        { id: "work", shape: "box" },
+      ],
+      edges: [
+        { from: "start", to: "setup" },
+        { from: "setup", to: "work" },
+        { from: "work", to: "exit" },
+      ],
+    });
 
     const failOnSetup: CodergenBackend = {
       async run(node) {
@@ -334,33 +356,34 @@ describe("Pipeline Engine", () => {
     const events: PipelineEvent[] = [];
     const logsRoot = await tempDir();
     const result = await runPipeline({
-      graph, logsRoot, backend: failOnSetup,
+      graph: g, logsRoot, backend: failOnSetup,
       onEvent: (e) => events.push(e),
     });
 
     expect(result.status).toBe("fail");
-    // Pipeline should stop at setup, not continue to work
     expect(result.completedNodes).toContain("setup");
     expect(result.completedNodes).not.toContain("work");
     expect(events.some(e => e.kind === "pipeline_failed")).toBe(true);
   });
 
   it("stage_failed event includes structured tool_failure data for tool stages", async () => {
-    const graph = parseDot(`
-      digraph G {
-        graph [goal="Test"]
-        start [shape=Mdiamond]
-        exit  [shape=Msquare]
-        check [shape=parallelogram, tool_command="echo 'error detail' >&2 && exit 1"]
-        start -> check
-        check -> exit
-      }
-    `);
+    const g = graph({
+      attrs: { goal: "Test" },
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "check", shape: "parallelogram", tool_command: "echo 'error detail' >&2 && exit 1" },
+      ],
+      edges: [
+        { from: "start", to: "check" },
+        { from: "check", to: "exit" },
+      ],
+    });
 
     const events: PipelineEvent[] = [];
     const logsRoot = await tempDir();
     const result = await runPipeline({
-      graph, logsRoot,
+      graph: g, logsRoot,
       onEvent: (e) => events.push(e),
     });
 
@@ -375,19 +398,21 @@ describe("Pipeline Engine", () => {
   });
 
   it("pipeline failure result includes failureSummary for tool stage failures", async () => {
-    const graph = parseDot(`
-      digraph G {
-        graph [goal="Test"]
-        start [shape=Mdiamond]
-        exit  [shape=Msquare]
-        check [shape=parallelogram, tool_command="echo failing && exit 1"]
-        start -> check
-        check -> exit
-      }
-    `);
+    const g = graph({
+      attrs: { goal: "Test" },
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "check", shape: "parallelogram", tool_command: "echo failing && exit 1" },
+      ],
+      edges: [
+        { from: "start", to: "check" },
+        { from: "check", to: "exit" },
+      ],
+    });
 
     const logsRoot = await tempDir();
-    const result = await runPipeline({ graph, logsRoot });
+    const result = await runPipeline({ graph: g, logsRoot });
 
     expect(result.status).toBe("fail");
     expect(result.failureSummary).toBeDefined();
@@ -395,23 +420,24 @@ describe("Pipeline Engine", () => {
     expect(result.failureSummary!.failureClass).toBe("exit_nonzero");
     expect(result.failureSummary!.digest).toBeTruthy();
     expect(result.failureSummary!.rerunCommand).toContain("exit 1");
-    // logsPath should be the specific attempt directory, not the root
     expect(result.failureSummary!.logsPath).toContain("check");
     expect(result.failureSummary!.logsPath).toContain("attempt-1");
     expect(result.failureSummary!.logsPath).not.toMatch(/meta\.json$/);
   });
 
   it("pipeline failure result includes failureSummary for codergen (LLM) failures", async () => {
-    const graph = parseDot(`
-      digraph G {
-        graph [goal="Test"]
-        start [shape=Mdiamond]
-        exit  [shape=Msquare]
-        review [shape=box, prompt="Review the code"]
-        start -> review
-        review -> exit
-      }
-    `);
+    const g = graph({
+      attrs: { goal: "Test" },
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "review", shape: "box", prompt: "Review the code" },
+      ],
+      edges: [
+        { from: "start", to: "review" },
+        { from: "review", to: "exit" },
+      ],
+    });
 
     const failingBackend: CodergenBackend = {
       async run() {
@@ -420,7 +446,7 @@ describe("Pipeline Engine", () => {
     };
 
     const logsRoot = await tempDir();
-    const result = await runPipeline({ graph, logsRoot, backend: failingBackend });
+    const result = await runPipeline({ graph: g, logsRoot, backend: failingBackend });
 
     expect(result.status).toBe("fail");
     expect(result.failureSummary).toBeDefined();
@@ -428,22 +454,23 @@ describe("Pipeline Engine", () => {
     expect(result.failureSummary!.failureClass).toBe("llm_error");
     expect(result.failureSummary!.digest).toContain("rate limit exceeded");
     expect(result.failureSummary!.failureReason).toBe("LLM error: rate limit exceeded");
-    // logsPath should point to the node's log directory
     expect(result.failureSummary!.logsPath).toContain("review");
     expect(result.failureSummary!.logsPath).toBe(join(logsRoot, "review"));
   });
 
   it("stage_failed event includes logsPath for all failure types", async () => {
-    const graph = parseDot(`
-      digraph G {
-        graph [goal="Test"]
-        start [shape=Mdiamond]
-        exit  [shape=Msquare]
-        plan [shape=box, prompt="Make a plan"]
-        start -> plan
-        plan -> exit
-      }
-    `);
+    const g = graph({
+      attrs: { goal: "Test" },
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "plan", shape: "box", prompt: "Make a plan" },
+      ],
+      edges: [
+        { from: "start", to: "plan" },
+        { from: "plan", to: "exit" },
+      ],
+    });
 
     const failingBackend: CodergenBackend = {
       async run() {
@@ -454,7 +481,7 @@ describe("Pipeline Engine", () => {
     const events: PipelineEvent[] = [];
     const logsRoot = await tempDir();
     await runPipeline({
-      graph, logsRoot, backend: failingBackend,
+      graph: g, logsRoot, backend: failingBackend,
       onEvent: (e) => events.push(e),
     });
 
@@ -464,18 +491,20 @@ describe("Pipeline Engine", () => {
   });
 
   it("follows explicit failure edge when node fails", async () => {
-    const graph = parseDot(`
-      digraph G {
-        start   [shape=Mdiamond]
-        exit    [shape=Msquare]
-        build   [shape=box]
-        fix     [shape=box]
-        start   -> build
-        build   -> exit  [label="Pass", condition="outcome=success"]
-        build   -> fix   [label="Fail", condition="outcome!=success"]
-        fix     -> exit
-      }
-    `);
+    const g = graph({
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "build", shape: "box" },
+        { id: "fix", shape: "box" },
+      ],
+      edges: [
+        { from: "start", to: "build" },
+        { from: "build", to: "exit", label: "Pass", condition: "outcome=success" },
+        { from: "build", to: "fix", label: "Fail", condition: "outcome!=success" },
+        { from: "fix", to: "exit" },
+      ],
+    });
 
     const failOnBuild: CodergenBackend = {
       async run(node) {
@@ -485,7 +514,7 @@ describe("Pipeline Engine", () => {
     };
 
     const logsRoot = await tempDir();
-    const result = await runPipeline({ graph, logsRoot, backend: failOnBuild });
+    const result = await runPipeline({ graph: g, logsRoot, backend: failOnBuild });
 
     expect(result.status).toBe("success");
     expect(result.completedNodes).toContain("build");
@@ -494,24 +523,23 @@ describe("Pipeline Engine", () => {
   });
 
   it("forwards failure through unconditional edge to conditional gate", async () => {
-    // Pattern: review → gate (diamond) → implement | revise
-    // When review returns fail, the unconditional edge to the gate should
-    // still be followed because the gate routes based on outcome.
-    const graph = parseDot(`
-      digraph G {
-        start   [shape=Mdiamond]
-        exit    [shape=Msquare]
-        review  [shape=box]
-        gate    [shape=diamond]
-        good    [shape=box]
-        revise  [shape=box]
-        start   -> review
-        review  -> gate
-        gate    -> good   [label="Pass", condition="outcome=success"]
-        gate    -> revise [label="Fail", condition="outcome!=success"]
-        revise  -> exit
-      }
-    `);
+    const g = graph({
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "review", shape: "box" },
+        { id: "gate", shape: "diamond" },
+        { id: "good", shape: "box" },
+        { id: "revise", shape: "box" },
+      ],
+      edges: [
+        { from: "start", to: "review" },
+        { from: "review", to: "gate" },
+        { from: "gate", to: "good", label: "Pass", condition: "outcome=success" },
+        { from: "gate", to: "revise", label: "Fail", condition: "outcome!=success" },
+        { from: "revise", to: "exit" },
+      ],
+    });
 
     const failOnReview: CodergenBackend = {
       async run(node) {
@@ -521,7 +549,7 @@ describe("Pipeline Engine", () => {
     };
 
     const logsRoot = await tempDir();
-    const result = await runPipeline({ graph, logsRoot, backend: failOnReview });
+    const result = await runPipeline({ graph: g, logsRoot, backend: failOnReview });
 
     expect(result.status).toBe("success");
     expect(result.completedNodes).toContain("review");
@@ -536,7 +564,6 @@ describe("Pipeline Engine", () => {
 // ---------------------------------------------------------------------------
 
 describe("Human gate re-review after revision", () => {
-  /** Decision sequence for the gate interviewer: pick options by label pattern in order. */
   type GateDecision = { pattern: RegExp };
 
   type ReReviewTestResult = {
@@ -545,18 +572,10 @@ describe("Human gate re-review after revision", () => {
     executedNodes: string[];
   };
 
-  /**
-   * Shared harness for re-review tests.
-   *
-   * Runs a pipeline with a tracking backend and a gate interviewer that picks
-   * options from `gateDecisions` in sequence (freeform questions always get
-   * an automatic text reply).
-   */
   async function runReReviewTest(
-    dot: string,
+    g: ReturnType<typeof graph>,
     gateDecisions: GateDecision[],
   ): Promise<ReReviewTestResult> {
-    const graph = parseDot(dot);
     let humanGateCallCount = 0;
     const executedNodes: string[] = [];
 
@@ -580,30 +599,34 @@ describe("Human gate re-review after revision", () => {
     };
 
     const logsRoot = await tempDir();
-    const result = await runPipeline({ graph, logsRoot, backend, interviewer });
+    const result = await runPipeline({ graph: g, logsRoot, backend, interviewer });
 
     return { result, humanGateCallCount, executedNodes };
   }
 
   it("redirects to human gate when revision bypasses the gate", async () => {
-    // Revision goes directly to the approve target (ws_merge), skipping the
-    // human gate. The engine should intercept and redirect.
-    const { result, humanGateCallCount, executedNodes } = await runReReviewTest(
-      `digraph G {
-        graph [goal="Test re-review"]
-        start [shape=Mdiamond]
-        exit  [shape=Msquare]
-        impl  [shape=box, prompt="Implement"]
-        human_review [shape=hexagon, prompt="Review the work"]
-        revise [shape=box, prompt="Revise"]
-        ws_merge [shape=box, prompt="Merge"]
+    const g = graph({
+      attrs: { goal: "Test re-review" },
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "impl", shape: "box", prompt: "Implement" },
+        { id: "human_review", shape: "hexagon", prompt: "Review the work" },
+        { id: "revise", shape: "box", prompt: "Revise" },
+        { id: "ws_merge", shape: "box", prompt: "Merge" },
+      ],
+      edges: [
+        { from: "start", to: "impl" },
+        { from: "impl", to: "human_review" },
+        { from: "human_review", to: "ws_merge", label: "Approve" },
+        { from: "human_review", to: "revise", label: "Revise" },
+        { from: "revise", to: "ws_merge" },
+        { from: "ws_merge", to: "exit" },
+      ],
+    });
 
-        start -> impl -> human_review
-        human_review -> ws_merge [label="Approve"]
-        human_review -> revise   [label="Revise"]
-        revise -> ws_merge
-        ws_merge -> exit
-      }`,
+    const { result, humanGateCallCount, executedNodes } = await runReReviewTest(
+      g,
       [{ pattern: /revise/i }, { pattern: /approve/i }],
     );
 
@@ -614,54 +637,62 @@ describe("Human gate re-review after revision", () => {
   });
 
   it("does not redirect when re_review=false on the human gate", async () => {
-    const { result, humanGateCallCount, executedNodes } = await runReReviewTest(
-      `digraph G {
-        graph [goal="Test no re-review"]
-        start [shape=Mdiamond]
-        exit  [shape=Msquare]
-        impl  [shape=box, prompt="Implement"]
-        human_review [shape=hexagon, prompt="Review", re_review=false]
-        revise [shape=box, prompt="Revise"]
-        ws_merge [shape=box, prompt="Merge"]
+    const g = graph({
+      attrs: { goal: "Test no re-review" },
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "impl", shape: "box", prompt: "Implement" },
+        { id: "human_review", shape: "hexagon", prompt: "Review", re_review: false },
+        { id: "revise", shape: "box", prompt: "Revise" },
+        { id: "ws_merge", shape: "box", prompt: "Merge" },
+      ],
+      edges: [
+        { from: "start", to: "impl" },
+        { from: "impl", to: "human_review" },
+        { from: "human_review", to: "ws_merge", label: "Approve" },
+        { from: "human_review", to: "revise", label: "Revise" },
+        { from: "revise", to: "ws_merge" },
+        { from: "ws_merge", to: "exit" },
+      ],
+    });
 
-        start -> impl -> human_review
-        human_review -> ws_merge [label="Approve"]
-        human_review -> revise   [label="Revise"]
-        revise -> ws_merge
-        ws_merge -> exit
-      }`,
+    const { result, humanGateCallCount, executedNodes } = await runReReviewTest(
+      g,
       [{ pattern: /revise/i }],
     );
 
     expect(result.status).toBe("success");
-    // Human gate should only be visited once — no re-review redirect
     expect(humanGateCallCount).toBe(1);
-    // revise ran and ws_merge was reached directly (no redirection)
     expect(executedNodes).toContain("revise");
     expect(executedNodes).toContain("ws_merge");
   });
 
   it("re-review works when the revision goes through intermediate nodes", async () => {
-    // human_review -> revise -> selfci -> ws_merge
-    // selfci is intermediate; ws_merge is the approve target.
-    const { result, humanGateCallCount, executedNodes } = await runReReviewTest(
-      `digraph G {
-        graph [goal="Test re-review with intermediates"]
-        start [shape=Mdiamond]
-        exit  [shape=Msquare]
-        impl  [shape=box, prompt="Implement"]
-        human_review [shape=hexagon, prompt="Review the work"]
-        revise [shape=box, prompt="Revise"]
-        selfci [shape=parallelogram, tool_command="echo ok"]
-        ws_merge [shape=box, prompt="Merge"]
+    const g = graph({
+      attrs: { goal: "Test re-review with intermediates" },
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "impl", shape: "box", prompt: "Implement" },
+        { id: "human_review", shape: "hexagon", prompt: "Review the work" },
+        { id: "revise", shape: "box", prompt: "Revise" },
+        { id: "selfci", shape: "parallelogram", tool_command: "echo ok" },
+        { id: "ws_merge", shape: "box", prompt: "Merge" },
+      ],
+      edges: [
+        { from: "start", to: "impl" },
+        { from: "impl", to: "human_review" },
+        { from: "human_review", to: "ws_merge", label: "Approve" },
+        { from: "human_review", to: "revise", label: "Revise" },
+        { from: "revise", to: "selfci" },
+        { from: "selfci", to: "ws_merge" },
+        { from: "ws_merge", to: "exit" },
+      ],
+    });
 
-        start -> impl -> human_review
-        human_review -> ws_merge [label="Approve"]
-        human_review -> revise   [label="Revise"]
-        revise -> selfci
-        selfci -> ws_merge
-        ws_merge -> exit
-      }`,
+    const { result, humanGateCallCount, executedNodes } = await runReReviewTest(
+      g,
       [{ pattern: /revise/i }, { pattern: /approve/i }],
     );
 
@@ -672,56 +703,57 @@ describe("Human gate re-review after revision", () => {
   });
 
   it("correctly-wired loop still works with re-review enabled", async () => {
-    // Revision already loops back through the human gate.
-    // Re-review should not interfere.
-    const { result, humanGateCallCount } = await runReReviewTest(
-      `digraph G {
-        graph [goal="Test well-wired loop"]
-        start [shape=Mdiamond]
-        exit  [shape=Msquare]
-        impl  [shape=box, prompt="Implement"]
-        human_review [shape=hexagon, prompt="Review"]
-        revise [shape=box, prompt="Revise"]
-        ws_merge [shape=box, prompt="Merge"]
+    const g = graph({
+      attrs: { goal: "Test well-wired loop" },
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "impl", shape: "box", prompt: "Implement" },
+        { id: "human_review", shape: "hexagon", prompt: "Review" },
+        { id: "revise", shape: "box", prompt: "Revise" },
+        { id: "ws_merge", shape: "box", prompt: "Merge" },
+      ],
+      edges: [
+        { from: "start", to: "impl" },
+        { from: "impl", to: "human_review" },
+        { from: "human_review", to: "ws_merge", label: "Approve" },
+        { from: "human_review", to: "revise", label: "Revise" },
+        { from: "revise", to: "human_review" },
+        { from: "ws_merge", to: "exit" },
+      ],
+    });
 
-        start -> impl -> human_review
-        human_review -> ws_merge [label="Approve"]
-        human_review -> revise   [label="Revise"]
-        revise -> human_review
-        ws_merge -> exit
-      }`,
+    const { result, humanGateCallCount } = await runReReviewTest(
+      g,
       [{ pattern: /revise/i }, { pattern: /approve/i }],
     );
 
     expect(result.status).toBe("success");
-    // Still visited twice — the natural loop and re-review don't conflict
     expect(humanGateCallCount).toBe(2);
   });
 
   it("multiple human gates track re-review state independently", async () => {
-    // Two sequential human gates (review_a, review_b). Reviewer chooses
-    // Revise at gate A, then the revision path passes through gate B
-    // (which approves). The engine must still enforce re-review for gate A
-    // even though gate B has already run.
-    const graph = parseDot(`
-      digraph G {
-        graph [goal="Test multi-gate re-review"]
-        start [shape=Mdiamond]
-        exit  [shape=Msquare]
-        impl     [shape=box, prompt="Implement"]
-        review_a [shape=hexagon, prompt="Review A"]
-        review_b [shape=hexagon, prompt="Review B"]
-        revise   [shape=box, prompt="Revise"]
-        deploy   [shape=box, prompt="Deploy"]
-
-        start -> impl -> review_a
-        review_a -> review_b [label="Approve"]
-        review_a -> revise   [label="Revise"]
-        revise -> review_b
-        review_b -> deploy [label="Approve"]
-        deploy -> exit
-      }
-    `);
+    const g = graph({
+      attrs: { goal: "Test multi-gate re-review" },
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "impl", shape: "box", prompt: "Implement" },
+        { id: "review_a", shape: "hexagon", prompt: "Review A" },
+        { id: "review_b", shape: "hexagon", prompt: "Review B" },
+        { id: "revise", shape: "box", prompt: "Revise" },
+        { id: "deploy", shape: "box", prompt: "Deploy" },
+      ],
+      edges: [
+        { from: "start", to: "impl" },
+        { from: "impl", to: "review_a" },
+        { from: "review_a", to: "review_b", label: "Approve" },
+        { from: "review_a", to: "revise", label: "Revise" },
+        { from: "revise", to: "review_b" },
+        { from: "review_b", to: "deploy", label: "Approve" },
+        { from: "deploy", to: "exit" },
+      ],
+    });
 
     const gateCalls: Record<string, number> = {};
     const executedNodes: string[] = [];
@@ -738,34 +770,27 @@ describe("Human gate re-review after revision", () => {
         if (question.type === "freeform") {
           return { value: "Feedback.", text: "Feedback." };
         }
-        // Determine which gate is asking by the prompt text
         const stage = question.stage;
         gateCalls[stage] = (gateCalls[stage] ?? 0) + 1;
 
         if (stage === "review_a") {
           if (gateCalls[stage] === 1) {
-            // First visit to A: Revise
             const revise = findOption(question.options, /revise/i);
             return { value: revise.key, selected_option: revise };
           }
-          // Re-review at A: Approve
           const approve = findOption(question.options, /approve/i);
           return { value: approve.key, selected_option: approve };
         }
-        // Gate B: always Approve
         const approve = findOption(question.options, /approve/i);
         return { value: approve.key, selected_option: approve };
       },
     };
 
     const logsRoot = await tempDir();
-    const result = await runPipeline({ graph, logsRoot, backend, interviewer });
+    const result = await runPipeline({ graph: g, logsRoot, backend, interviewer });
 
     expect(result.status).toBe("success");
-    // Gate A should have been visited twice (initial Revise + re-review Approve)
     expect(gateCalls["review_a"]).toBe(2);
-    // Gate B should only be visited once — the first attempt to reach it
-    // (after revise) was intercepted by review_a's re-review redirect.
     expect(gateCalls["review_b"]).toBe(1);
     expect(executedNodes).toContain("revise");
     expect(executedNodes).toContain("deploy");
@@ -778,23 +803,26 @@ describe("Human gate re-review after revision", () => {
 
 describe("Pipeline Cancellation", () => {
   it("abort before first stage exits immediately as cancelled", async () => {
-    const graph = parseDot(`
-      digraph Test {
-        graph [goal="Test"]
-        start [shape=Mdiamond]
-        exit [shape=Msquare]
-        work [shape=box, prompt="Work"]
-        start -> work -> exit
-      }
-    `);
+    const g = graph({
+      attrs: { goal: "Test" },
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "work", shape: "box", prompt: "Work" },
+      ],
+      edges: [
+        { from: "start", to: "work" },
+        { from: "work", to: "exit" },
+      ],
+    });
 
     const controller = new AbortController();
-    controller.abort(); // Pre-abort
+    controller.abort();
 
     const events: PipelineEvent[] = [];
     const logsRoot = await tempDir();
     const result = await runPipeline({
-      graph,
+      graph: g,
       logsRoot,
       backend: successBackend,
       abortSignal: controller.signal,
@@ -803,7 +831,6 @@ describe("Pipeline Cancellation", () => {
 
     expect(result.status).toBe("cancelled");
     expect(result.lastOutcome?.status).toBe("cancelled");
-    // Should not have executed any non-start stages
     expect(result.completedNodes).not.toContain("work");
     expect(events.some(e => e.kind === "pipeline_cancelled")).toBe(true);
   });
@@ -816,27 +843,30 @@ describe("Pipeline Cancellation", () => {
       async run(node) {
         executedNodes.push(node.id);
         if (node.id === "work") {
-          // Abort during this stage
           controller.abort();
         }
         return `Done: ${node.id}`;
       },
     };
 
-    const graph = parseDot(`
-      digraph Test {
-        graph [goal="Test"]
-        start [shape=Mdiamond]
-        exit [shape=Msquare]
-        work [shape=box, prompt="Work"]
-        next [shape=box, prompt="Next"]
-        start -> work -> next -> exit
-      }
-    `);
+    const g = graph({
+      attrs: { goal: "Test" },
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "work", shape: "box", prompt: "Work" },
+        { id: "next", shape: "box", prompt: "Next" },
+      ],
+      edges: [
+        { from: "start", to: "work" },
+        { from: "work", to: "next" },
+        { from: "next", to: "exit" },
+      ],
+    });
 
     const logsRoot = await tempDir();
     const result = await runPipeline({
-      graph,
+      graph: g,
       logsRoot,
       backend: slowBackend,
       abortSignal: controller.signal,
@@ -855,27 +885,29 @@ describe("Pipeline Cancellation", () => {
       async run(node) {
         retryCount++;
         if (retryCount === 1) {
-          // Schedule abort after a short delay (during backoff)
           setTimeout(() => controller.abort(), 10);
         }
         return { status: "fail", failure_reason: "test fail" } as Outcome;
       },
     };
 
-    const graph = parseDot(`
-      digraph Test {
-        graph [goal="Test"]
-        start [shape=Mdiamond]
-        exit [shape=Msquare]
-        work [shape=box, prompt="Work", max_retries=5]
-        start -> work -> exit
-      }
-    `);
+    const g = graph({
+      attrs: { goal: "Test" },
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "work", shape: "box", prompt: "Work", max_retries: 5 },
+      ],
+      edges: [
+        { from: "start", to: "work" },
+        { from: "work", to: "exit" },
+      ],
+    });
 
     const logsRoot = await tempDir();
     const startTime = Date.now();
     const result = await runPipeline({
-      graph,
+      graph: g,
       logsRoot,
       backend: failingBackend,
       abortSignal: controller.signal,
@@ -883,8 +915,6 @@ describe("Pipeline Cancellation", () => {
     const elapsed = Date.now() - startTime;
 
     expect(result.status).toBe("cancelled");
-    // Should have exited quickly, not waited for all retries
-    // With 5 retries and exponential backoff, full run would take >6s
     expect(elapsed).toBeLessThan(3000);
   });
 
@@ -899,19 +929,22 @@ describe("Pipeline Cancellation", () => {
       },
     };
 
-    const graph = parseDot(`
-      digraph Test {
-        graph [goal="Test"]
-        start [shape=Mdiamond]
-        exit [shape=Msquare]
-        work [shape=box, prompt="Work"]
-        start -> work -> exit
-      }
-    `);
+    const g = graph({
+      attrs: { goal: "Test" },
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "work", shape: "box", prompt: "Work" },
+      ],
+      edges: [
+        { from: "start", to: "work" },
+        { from: "work", to: "exit" },
+      ],
+    });
 
     const logsRoot = await tempDir();
     await runPipeline({
-      graph,
+      graph: g,
       logsRoot,
       backend: abortBackend,
       abortSignal: controller.signal,
@@ -933,25 +966,27 @@ describe("Pipeline Cancellation", () => {
       },
     };
 
-    const graph = parseDot(`
-      digraph Test {
-        graph [goal="Test"]
-        start [shape=Mdiamond]
-        exit [shape=Msquare]
-        work [shape=box, prompt="Work"]
-        start -> work -> exit
-      }
-    `);
+    const g = graph({
+      attrs: { goal: "Test" },
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "work", shape: "box", prompt: "Work" },
+      ],
+      edges: [
+        { from: "start", to: "work" },
+        { from: "work", to: "exit" },
+      ],
+    });
 
     const logsRoot = await tempDir();
     await runPipeline({
-      graph,
+      graph: g,
       logsRoot,
       backend: abortBackend,
       abortSignal: controller.signal,
     });
 
-    // Checkpoint should exist
     const cpPath = join(logsRoot, "checkpoint.json");
     const cpJson = await readFile(cpPath, "utf-8");
     const checkpoint = JSON.parse(cpJson);
@@ -966,7 +1001,6 @@ describe("Pipeline Cancellation", () => {
     const abortBackend: CodergenBackend = {
       async run(node, _prompt, context) {
         if (node.id === "work") {
-          // Simulate workspace context being set
           context.set("workspace.path", "/tmp/fake-ws");
           context.set("workspace.name", "fake-ws");
           controller.abort();
@@ -975,19 +1009,22 @@ describe("Pipeline Cancellation", () => {
       },
     };
 
-    const graph = parseDot(`
-      digraph Test {
-        graph [goal="Test"]
-        start [shape=Mdiamond]
-        exit [shape=Msquare]
-        work [shape=box, prompt="Work"]
-        start -> work -> exit
-      }
-    `);
+    const g = graph({
+      attrs: { goal: "Test" },
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "work", shape: "box", prompt: "Work" },
+      ],
+      edges: [
+        { from: "start", to: "work" },
+        { from: "work", to: "exit" },
+      ],
+    });
 
     const logsRoot = await tempDir();
     const result = await runPipeline({
-      graph,
+      graph: g,
       logsRoot,
       backend: abortBackend,
       abortSignal: controller.signal,
@@ -996,7 +1033,6 @@ describe("Pipeline Cancellation", () => {
     });
 
     expect(result.status).toBe("cancelled");
-    // Emergency cleanup should NOT have been called since this is cancellation, not failure
     expect(cleanupCalled).toBe(false);
   });
 });
@@ -1006,7 +1042,6 @@ describe("Pipeline Cancellation", () => {
 // ---------------------------------------------------------------------------
 
 describe("Pipeline Usage Tracking", () => {
-  /** Backend that puts usage metrics into context_updates. */
   function usageBackend(usageByNode: Record<string, { input: number; output: number; cost: number }>): CodergenBackend {
     return {
       async run(node) {
@@ -1030,20 +1065,24 @@ describe("Pipeline Usage Tracking", () => {
   }
 
   it("happy path: collects usage from multiple stages", async () => {
-    const graph = parseDot(`
-      digraph G {
-        graph [goal="Test usage"]
-        start [shape=Mdiamond]
-        exit [shape=Msquare]
-        plan [shape=box, prompt="Plan"]
-        impl [shape=box, prompt="Implement"]
-        start -> plan -> impl -> exit
-      }
-    `);
+    const g = graph({
+      attrs: { goal: "Test usage" },
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "plan", shape: "box", prompt: "Plan" },
+        { id: "impl", shape: "box", prompt: "Implement" },
+      ],
+      edges: [
+        { from: "start", to: "plan" },
+        { from: "plan", to: "impl" },
+        { from: "impl", to: "exit" },
+      ],
+    });
 
     const logsRoot = await tempDir();
     const result = await runPipeline({
-      graph,
+      graph: g,
       logsRoot,
       backend: usageBackend({
         plan: { input: 100, output: 50, cost: 0.001 },
@@ -1097,24 +1136,25 @@ describe("Pipeline Usage Tracking", () => {
       },
     };
 
-    const graph = parseDot(`
-      digraph G {
-        graph [goal="Test retries"]
-        start [shape=Mdiamond]
-        exit [shape=Msquare]
-        work [shape=box, prompt="Work", max_retries=2]
-        start -> work -> exit
-      }
-    `);
+    const g = graph({
+      attrs: { goal: "Test retries" },
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "work", shape: "box", prompt: "Work", max_retries: 2 },
+      ],
+      edges: [
+        { from: "start", to: "work" },
+        { from: "work", to: "exit" },
+      ],
+    });
 
     const logsRoot = await tempDir();
-    const result = await runPipeline({ graph, logsRoot, backend: retryBackend });
+    const result = await runPipeline({ graph: g, logsRoot, backend: retryBackend });
 
     expect(result.status).toBe("success");
     expect(result.usageSummary).toBeDefined();
-    // Both attempts should be in the breakdown
     expect(result.usageSummary!.stages.length).toBeGreaterThanOrEqual(1);
-    // Totals should include cost from both attempts  
     expect(result.usageSummary!.totals.cost).toBeGreaterThanOrEqual(0.002);
   });
 
@@ -1136,18 +1176,21 @@ describe("Pipeline Usage Tracking", () => {
       },
     };
 
-    const graph = parseDot(`
-      digraph G {
-        graph [goal="Test fail usage"]
-        start [shape=Mdiamond]
-        exit [shape=Msquare]
-        work [shape=box, prompt="Work"]
-        start -> work -> exit
-      }
-    `);
+    const g = graph({
+      attrs: { goal: "Test fail usage" },
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "work", shape: "box", prompt: "Work" },
+      ],
+      edges: [
+        { from: "start", to: "work" },
+        { from: "work", to: "exit" },
+      ],
+    });
 
     const logsRoot = await tempDir();
-    const result = await runPipeline({ graph, logsRoot, backend: failBackend });
+    const result = await runPipeline({ graph: g, logsRoot, backend: failBackend });
 
     expect(result.status).toBe("fail");
     expect(result.usageSummary).toBeDefined();
@@ -1174,20 +1217,24 @@ describe("Pipeline Usage Tracking", () => {
       },
     };
 
-    const graph = parseDot(`
-      digraph G {
-        graph [goal="Test cancel usage"]
-        start [shape=Mdiamond]
-        exit [shape=Msquare]
-        a [shape=box, prompt="A"]
-        b [shape=box, prompt="B"]
-        start -> a -> b -> exit
-      }
-    `);
+    const g = graph({
+      attrs: { goal: "Test cancel usage" },
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "a", shape: "box", prompt: "A" },
+        { id: "b", shape: "box", prompt: "B" },
+      ],
+      edges: [
+        { from: "start", to: "a" },
+        { from: "a", to: "b" },
+        { from: "b", to: "exit" },
+      ],
+    });
 
     const logsRoot = await tempDir();
     const result = await runPipeline({
-      graph, logsRoot,
+      graph: g, logsRoot,
       backend: abortBackend,
       abortSignal: controller.signal,
     });
@@ -1198,16 +1245,16 @@ describe("Pipeline Usage Tracking", () => {
   });
 
   it("no usage: usageSummary has empty stages and zero totals", async () => {
-    const graph = parseDot(`
-      digraph G {
-        start [shape=Mdiamond]
-        exit [shape=Msquare]
-        start -> exit
-      }
-    `);
+    const g = graph({
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+      ],
+      edges: [{ from: "start", to: "exit" }],
+    });
 
     const logsRoot = await tempDir();
-    const result = await runPipeline({ graph, logsRoot, backend: successBackend });
+    const result = await runPipeline({ graph: g, logsRoot, backend: successBackend });
 
     expect(result.status).toBe("success");
     expect(result.usageSummary).toBeDefined();
@@ -1217,20 +1264,23 @@ describe("Pipeline Usage Tracking", () => {
   });
 
   it("emits usage_update events during execution", async () => {
-    const graph = parseDot(`
-      digraph G {
-        graph [goal="Test events"]
-        start [shape=Mdiamond]
-        exit [shape=Msquare]
-        work [shape=box, prompt="Work"]
-        start -> work -> exit
-      }
-    `);
+    const g = graph({
+      attrs: { goal: "Test events" },
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "work", shape: "box", prompt: "Work" },
+      ],
+      edges: [
+        { from: "start", to: "work" },
+        { from: "work", to: "exit" },
+      ],
+    });
 
     const events: PipelineEvent[] = [];
     const logsRoot = await tempDir();
     await runPipeline({
-      graph,
+      graph: g,
       logsRoot,
       backend: usageBackend({ work: { input: 100, output: 50, cost: 0.001 } }),
       onEvent: (e) => events.push(e),
@@ -1259,28 +1309,28 @@ describe("Pipeline Usage Tracking", () => {
       },
     };
 
-    const graph = parseDot(`
-      digraph G {
-        graph [goal="Test bad usage"]
-        start [shape=Mdiamond]
-        exit [shape=Msquare]
-        work [shape=box, prompt="Work"]
-        start -> work -> exit
-      }
-    `);
+    const g = graph({
+      attrs: { goal: "Test bad usage" },
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "work", shape: "box", prompt: "Work" },
+      ],
+      edges: [
+        { from: "start", to: "work" },
+        { from: "work", to: "exit" },
+      ],
+    });
 
     const logsRoot = await tempDir();
-    const result = await runPipeline({ graph, logsRoot, backend: badBackend });
+    const result = await runPipeline({ graph: g, logsRoot, backend: badBackend });
 
     expect(result.status).toBe("success");
     expect(result.usageSummary).toBeDefined();
-    // Non-numeric values should be treated as 0
     expect(result.usageSummary!.totals.input_tokens).toBe(0);
     expect(result.usageSummary!.totals.output_tokens).toBe(0);
-    // NaN and Infinity should be treated as 0
     expect(result.usageSummary!.totals.cache_read_tokens).toBe(0);
     expect(result.usageSummary!.totals.cache_write_tokens).toBe(0);
-    // Valid cost should still be captured
     expect(result.usageSummary!.totals.cost).toBe(0.001);
   });
 
@@ -1296,18 +1346,21 @@ describe("Pipeline Usage Tracking", () => {
       },
     };
 
-    const graph = parseDot(`
-      digraph G {
-        graph [goal="Test partial usage"]
-        start [shape=Mdiamond]
-        exit [shape=Msquare]
-        work [shape=box, prompt="Work"]
-        start -> work -> exit
-      }
-    `);
+    const g = graph({
+      attrs: { goal: "Test partial usage" },
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "work", shape: "box", prompt: "Work" },
+      ],
+      edges: [
+        { from: "start", to: "work" },
+        { from: "work", to: "exit" },
+      ],
+    });
 
     const logsRoot = await tempDir();
-    const result = await runPipeline({ graph, logsRoot, backend: costOnlyBackend });
+    const result = await runPipeline({ graph: g, logsRoot, backend: costOnlyBackend });
 
     expect(result.status).toBe("success");
     expect(result.usageSummary).toBeDefined();
