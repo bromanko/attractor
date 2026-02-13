@@ -14,25 +14,13 @@
 - [x] **Fix banner border alignment** — The box-drawing characters in the startup banner are misaligned (content width doesn't match border width). Use consistent column widths for `┌`, `│`, and `└` lines.
 - [x] **Show per-stage model** — When a stage uses a non-default model, display it alongside the stage name in the output (e.g., `▶️  plan_review [gpt-5.3-codex]`).
 - [x] **Render markdown in terminal output** — LLM responses displayed at human gates and in failure messages are raw markdown. Use `marked` + `marked-terminal` to render headings, lists, code blocks, and emphasis with ANSI formatting for readable terminal output.
-- [ ] **Structured failure output for tool stages (esp. `selfci`)** — Replace generic `Command failed` messages with concise, actionable diagnostics.
-  - [ ] Persist per-stage logs (`stdout.log`, `stderr.log`, `meta.json`) under run logs.
-  - [ ] Capture structured failure fields (command, cwd, exit code/signal, duration, stderr/stdout tail).
-  - [ ] Extract and print a one-line "failure digest" for common tools (`selfci`, `tsc`, `vitest`, `nix`) while still linking full logs.
-  - [ ] Improve final summary to include failed node, failure class, first failing check, and rerun command.
-  - [ ] Distinguish "noise" warnings (e.g. non-fatal SQLite busy) from primary failure causes.
-- [ ] **Structured review stage output (`review_code`)** — Review failures are currently dumped as raw markdown blocks in a single line.
-  - [ ] Render a compact header (`severity`, `category`, `file:line`, short finding title) with optional expanded details.
-  - [ ] Store parsed findings as structured JSON artifact per stage for later summarization/routing.
-  - [ ] Add clearer visual treatment for finding blocks (border/background color panel) to separate them from pipeline status lines.
-- [ ] **Workflow usage/cost metrics in CLI output** — Show token and cost telemetry (similar to pi status bar) during runs when available, and always summarize at pipeline end.
-  - [ ] Track per-stage usage (`input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `total_tokens`, `cost`) from backend/context.
-  - [ ] Add optional live stage footer or periodic updates for running totals (tokens in/out + estimated cost).
-  - [ ] Extend final summary with run totals and a per-stage breakdown table.
-  - [ ] Gracefully degrade when usage data is unavailable (show `n/a`, keep summary format stable).
+- [x] **Structured failure output for tool stages (esp. `selfci`)** — Per-stage logs (`stdout.log`, `stderr.log`, `meta.json`), structured failure fields, failure digest extraction for common tools, final summary with failure class/digest/rerun command.
+- [x] **Structured review stage output (`review_code`)** — Severity-based diagnostics with structured rendering via pi extensions and validator.
+- [x] **Workflow usage/cost metrics in CLI output** — Per-stage usage tracking (input/output/cache tokens + cost), `usage_update` events, final summary with per-stage breakdown table, graceful degradation when unavailable.
 
 ## Trust & Signal Integrity
 
-- [ ] **Prevent LLM self-assessment in fix/implement stages** — LLM stages that make code changes should not self-report success via `[STATUS: success]`. Their output claims ("all tests pass", "addresses all findings") are unreliable. Only verification stages (selfci, reviews) should produce status signals. Consider: (a) stripping `[STATUS:]` markers from non-review nodes, (b) adding a node attribute like `ignore_status_markers=true`, or (c) always treating implement/fix nodes as `success` regardless of markers.
+- [x] **Prevent LLM self-assessment in fix/implement stages** — Codergen nodes (shape `box`) now ignore `[STATUS:]` markers by default. Review/verification nodes opt in with `auto_status=true`. Routing markers (`PREFERRED_LABEL`, `NEXT`) are always parsed.
 - [x] **Human review gate re-review after revision** — When an implement/fix stage has a human review gate and the reviewer requests revisions, the pipeline should loop back to the human review after the revision is applied rather than auto-merging. The reviewer must be able to inspect the revised output before it proceeds. This avoids silently accepting changes that may not address the reviewer's concerns.
 - [ ] **Review findings accumulation** — When multiple reviews run in sequence and some fail, the `fix` node needs all findings aggregated, not just the last one. Consider a `findings` context key that accumulates across review stages, or have the gate node summarize all review outcomes before routing to fix.
 
