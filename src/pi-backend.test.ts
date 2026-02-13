@@ -15,7 +15,7 @@ import {
   loadPromptFiles,
   expandPath,
 } from "./pi-backend.js";
-import { Context } from "./pipeline/types.js";
+import { Context, HUMAN_GATE_KEYS } from "./pipeline/types.js";
 import type { GraphNode } from "./pipeline/types.js";
 import type {
   CreateAgentSessionOptions,
@@ -266,7 +266,7 @@ describe("buildContextSummary", () => {
   it("gives feedback keys generous truncation limit", () => {
     const ctx = new Context();
     const longFeedback = "y".repeat(3500);
-    ctx.set("human.gate.feedback", longFeedback);
+    ctx.set(HUMAN_GATE_KEYS.FEEDBACK, longFeedback);
     const summary = buildContextSummary(ctx);
     expect(summary).toContain("y".repeat(3500));
   });

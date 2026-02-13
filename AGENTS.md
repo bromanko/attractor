@@ -54,9 +54,11 @@ If the change is isolated and full tests are expensive, run the most relevant te
 ## Code style expectations
 
 - TypeScript `strict` mode is enabled: avoid `any` and unsafe casts.
+- **Test mocks must be typed against their real interfaces** (e.g., `const interviewer: Interviewer = { ... }`). Never use `as any` to silence type mismatches on mocks — this defeats the purpose of type checking and hides breakage when interfaces change.
 - Keep modules ESM-compatible (`"type": "module"`, NodeNext).
 - Prefer discriminated unions and narrow types for state/result modeling.
-- Keep error handling explicit; return structured error data where appropriate.
+- **Use named constants for cross-module context/config keys.** Never scatter magic string literals across files. See `HUMAN_GATE_KEYS` in `src/pipeline/types.ts` as the pattern — define a `const` object in a shared location and import it everywhere the keys are read or written.
+- Keep error handling explicit; return structured error data where appropriate. **Never use bare `catch {}` or `catch { /* ignore */ }` to swallow errors silently.** At minimum log a warning. Better yet, avoid the need — e.g., store structured values in `Context` natively (using `get`/`set` with typed accessors like `getStringArray`) instead of serializing to JSON strings and parsing them back.
 - Add or update tests in `test/` when behavior changes.
 
 ## When editing architecture-critical areas
