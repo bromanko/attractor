@@ -3,6 +3,7 @@ import type { Graph, GraphNode, GraphEdge } from "./types.js";
 import type { Awf2Workflow, Awf2Stage, Awf2Transition } from "./awf2-types.js";
 import { parseAwf2Kdl } from "./awf2-kdl-parser.js";
 import { validateAwf2OrRaise } from "./awf2-validator.js";
+import { compileAwf2ExprToEngineConditions, type EngineConditions } from "./awf2-expr.js";
 
 export type LoadedWorkflow = {
   format: "dot" | "awf2";
@@ -15,63 +16,19 @@ function encodeOrderWeight(priority: number | undefined, index: number, total: n
   return p * 1_000_000 + (total - index);
 }
 
-function mapSimpleClause(clause: string): string {
-  const trimmed = clause.trim();
-
-  if (trimmed === "true") return "";
-
-  // outcome("stage") == "success"
-  {
-    const m = trimmed.match(/^outcome\("[^"]+"\)\s*==\s*"([^"]+)"$/);
-    if (m) return `outcome=${m[1]}`;
-  }
-
-  // outcome("stage") != "success"
-  {
-    const m = trimmed.match(/^outcome\("[^"]+"\)\s*!=\s*"([^"]+)"$/);
-    if (m) return `outcome!=${m[1]}`;
-  }
-
-  // output("stage.key") == "value"
-  {
-    const m = trimmed.match(/^output\("([^"]+)"\)\s*==\s*"([^"]+)"$/);
-    if (m) return `context.${m[1]}=${m[2]}`;
-  }
-
-  // output("stage.key") != "value"
-  {
-    const m = trimmed.match(/^output\("([^"]+)"\)\s*!=\s*"([^"]+)"$/);
-    if (m) return `context.${m[1]}!=${m[2]}`;
-  }
-
-  // exists("stage.key")
-  {
-    const m = trimmed.match(/^exists\("([^"]+)"\)$/);
-    if (m) return `context.${m[1]}!=`;
-  }
-
-  throw new Error(`Unsupported AWF2 expression clause for current engine adapter: ${trimmed}`);
-}
-
-/**
- * Convert AWF2 expression language into current engine condition language.
- *
- * Supported currently: conjunctions (`&&`) of simple clauses.
- * Unsupported: `||`, unary `!`, nested parentheses across disjunctions.
- */
-function toEngineCondition(expr: string | undefined): string | undefined {
-  if (!expr) return undefined;
+function toEdgeConditions(expr: string | undefined): Array<string | undefined> {
+  if (!expr) return [undefined];
   const trimmed = expr.trim();
-  if (!trimmed || trimmed === "true") return undefined;
-
-  if (trimmed.includes("||")) {
-    throw new Error(`Unsupported AWF2 expression for current engine adapter (||): ${expr}`);
+  if (!trimmed || trimmed === "true") return [undefined];
+  const result: EngineConditions = compileAwf2ExprToEngineConditions(trimmed);
+  switch (result.kind) {
+    case "unsatisfiable":
+      return [];
+    case "unconditional":
+      return [undefined];
+    case "disjunction":
+      return result.clauses;
   }
-
-  const parts = trimmed.split("&&").map((p) => p.trim()).filter(Boolean);
-  const mapped = parts.map(mapSimpleClause).filter((s) => s.length > 0);
-  if (mapped.length === 0) return undefined;
-  return mapped.join(" && ");
 }
 
 function stageToGraphNode(stage: Awf2Stage): GraphNode {
@@ -124,14 +81,17 @@ function addTransitionEdges(edges: GraphEdge[], transitions: Awf2Transition[]): 
   for (const [from, list] of bySource.entries()) {
     for (let i = 0; i < list.length; i++) {
       const t = list[i]!;
-      edges.push({
-        from,
-        to: t.to,
-        attrs: {
-          condition: toEngineCondition(t.when),
-          weight: encodeOrderWeight(t.priority, i, list.length),
-        },
-      });
+      const conditions = toEdgeConditions(t.when);
+      for (const condition of conditions) {
+        edges.push({
+          from,
+          to: t.to,
+          attrs: {
+            condition,
+            weight: encodeOrderWeight(t.priority, i, list.length),
+          },
+        });
+      }
     }
   }
 }
@@ -165,14 +125,17 @@ export function awf2ToGraph(workflow: Awf2Workflow): Graph {
     if (stage.kind === "decision") {
       for (let i = 0; i < stage.routes.length; i++) {
         const route = stage.routes[i]!;
-        edges.push({
-          from: stage.id,
-          to: route.to,
-          attrs: {
-            condition: toEngineCondition(route.when),
-            weight: encodeOrderWeight(route.priority, i, stage.routes.length),
-          },
-        });
+        const conditions = toEdgeConditions(route.when);
+        for (const condition of conditions) {
+          edges.push({
+            from: stage.id,
+            to: route.to,
+            attrs: {
+              condition,
+              weight: encodeOrderWeight(route.priority, i, stage.routes.length),
+            },
+          });
+        }
       }
     }
   }

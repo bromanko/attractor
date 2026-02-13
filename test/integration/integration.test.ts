@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { parseDot } from "../../src/pipeline/dot-parser.js";
+import { parseAwf2Workflow, awf2ToGraph } from "../../src/pipeline/awf2-loader.js";
 import { validate, validateOrRaise } from "../../src/pipeline/validator.js";
 import { runPipeline } from "../../src/pipeline/engine.js";
 import { applyStylesheet } from "../../src/pipeline/stylesheet.js";
@@ -40,6 +41,12 @@ const WORKFLOWS = join(import.meta.dirname, "workflows");
 async function loadWorkflow(name: string) {
   const dot = await readFile(join(WORKFLOWS, name), "utf-8");
   return parseDot(dot);
+}
+
+async function loadAwf2Workflow(name: string) {
+  const source = await readFile(join(WORKFLOWS, name), "utf-8");
+  const awf2 = parseAwf2Workflow(source);
+  return awf2ToGraph(awf2);
 }
 
 let suiteTempRootPromise: Promise<string> | undefined;
@@ -961,5 +968,92 @@ describe("auto_status DOT parsing end-to-end", () => {
     expect(result.completedNodes).toContain("implement");
     expect(result.completedNodes).toContain("review");
     expect(result.completedNodes).toContain("exit");
+  });
+});
+
+// ===========================================================================
+// 21. AWF2 logical routing end-to-end
+// ===========================================================================
+
+describe("AWF2 expression routing", () => {
+  it("routes via !exists branch when blocker output is absent", async () => {
+    const graph = await loadAwf2Workflow("awf2-logic-routing.awf.kdl");
+    const logs = await tempDir();
+
+    const backend = nodeOutcomeBackend({
+      build: {
+        status: "success",
+        context_updates: {
+          "build.review": "fail",
+        },
+      },
+    });
+
+    const result = await runPipeline({ graph, logsRoot: logs, backend });
+
+    expect(result.status).toBe("success");
+    expect(result.completedNodes).toContain("pass");
+    expect(result.completedNodes).not.toContain("fix");
+  });
+
+  it("routes via OR fallback branch when blocker exists", async () => {
+    const graph = await loadAwf2Workflow("awf2-logic-routing.awf.kdl");
+    const logs = await tempDir();
+
+    const backend = nodeOutcomeBackend({
+      build: {
+        status: "success",
+        context_updates: {
+          "build.blocker": "yes",
+          "build.review": "pass",
+        },
+      },
+    });
+
+    const result = await runPipeline({ graph, logsRoot: logs, backend });
+
+    expect(result.status).toBe("success");
+    expect(result.completedNodes).toContain("pass");
+    expect(result.completedNodes).not.toContain("fix");
+  });
+
+  it("routes via != conjunction when risk is not high", async () => {
+    const graph = await loadAwf2Workflow("awf2-logic-routing-neq.awf.kdl");
+    const logs = await tempDir();
+
+    const backend = nodeOutcomeBackend({
+      build: {
+        status: "success",
+        context_updates: {
+          "build.risk": "low",
+        },
+      },
+    });
+
+    const result = await runPipeline({ graph, logsRoot: logs, backend });
+
+    expect(result.status).toBe("success");
+    expect(result.completedNodes).toContain("ship");
+    expect(result.completedNodes).not.toContain("fix");
+  });
+
+  it("falls through to fix when != conjunction fails", async () => {
+    const graph = await loadAwf2Workflow("awf2-logic-routing-neq.awf.kdl");
+    const logs = await tempDir();
+
+    const backend = nodeOutcomeBackend({
+      build: {
+        status: "success",
+        context_updates: {
+          "build.risk": "high",
+        },
+      },
+    });
+
+    const result = await runPipeline({ graph, logsRoot: logs, backend });
+
+    expect(result.status).toBe("success");
+    expect(result.completedNodes).toContain("fix");
+    expect(result.completedNodes).not.toContain("ship");
   });
 });

@@ -622,6 +622,7 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
 
     // Context updates already applied in retry loop above
     context.set("outcome", outcome.status);
+    context.set(`${node.id}.status`, outcome.status);
     if (outcome.preferred_label) {
       context.set("preferred_label", outcome.preferred_label);
     }

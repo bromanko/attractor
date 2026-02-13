@@ -1,7 +1,7 @@
 import { isAbsolute } from "node:path";
 import type { Awf2Workflow, Awf2Diagnostic, Awf2Stage } from "./awf2-types.js";
 import { awf2Diag } from "./awf2-types.js";
-import { collectExpressionStageRefs, isPlausibleExpression } from "./awf2-expr.js";
+import { parseAwf2Expr, isPlausibleExpression } from "./awf2-expr.js";
 
 function isHumanOrDecision(stage: Awf2Stage): boolean {
   return stage.kind === "human" || stage.kind === "decision";
@@ -229,14 +229,16 @@ export function validateAwf2(workflow: Awf2Workflow): Awf2Diagnostic[] {
           ));
         }
 
-        for (const ref of collectExpressionStageRefs(route.when)) {
-          if (!stageIds.has(ref.stageId)) {
-            diags.push(awf2Diag(
-              "awf2_expression_stage_ref",
-              "error",
-              `Expression in stage "${stage.id}" references unknown stage "${ref.stageId}".`,
-              { node_id: stage.id },
-            ));
+        if (isPlausibleExpression(route.when)) {
+          for (const ref of parseAwf2Expr(route.when).stageRefs()) {
+            if (!stageIds.has(ref.stageId)) {
+              diags.push(awf2Diag(
+                "awf2_expression_stage_ref",
+                "error",
+                `Expression in stage "${stage.id}" references unknown stage "${ref.stageId}".`,
+                { node_id: stage.id },
+              ));
+            }
           }
         }
       }
@@ -245,8 +247,8 @@ export function validateAwf2(workflow: Awf2Workflow): Awf2Diagnostic[] {
 
   // Global transition expression refs
   for (const t of workflow.transitions ?? []) {
-    if (!t.when) continue;
-    for (const ref of collectExpressionStageRefs(t.when)) {
+    if (!t.when || !isPlausibleExpression(t.when)) continue;
+    for (const ref of parseAwf2Expr(t.when).stageRefs()) {
       if (!stageIds.has(ref.stageId)) {
         diags.push(awf2Diag(
           "awf2_expression_stage_ref",
