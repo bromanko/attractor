@@ -8,11 +8,14 @@
 import { existsSync } from "node:fs";
 import { resolve, extname } from "node:path";
 
+const VALID_SHOW_FORMATS: ReadonlySet<string> = new Set(["ascii", "boxart", "dot"]);
+const VALID_TOOL_MODES: ReadonlySet<string> = new Set(["none", "read-only", "coding"]);
+
 // ---------------------------------------------------------------------------
 // Parsed command types
 // ---------------------------------------------------------------------------
 
-export type Subcommand = "run" | "validate";
+export type Subcommand = "run" | "validate" | "show";
 
 export type ParsedRunCommand = {
   subcommand: "run";
@@ -30,7 +33,15 @@ export type ParsedValidateCommand = {
   workflowPath: string;
 };
 
-export type ParsedCommand = ParsedRunCommand | ParsedValidateCommand;
+export type ShowFormat = "ascii" | "boxart" | "dot";
+
+export type ParsedShowCommand = {
+  subcommand: "show";
+  workflowPath: string;
+  format?: ShowFormat;
+};
+
+export type ParsedCommand = ParsedRunCommand | ParsedValidateCommand | ParsedShowCommand;
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -52,6 +63,7 @@ export function usageText(): string {
     "Usage:",
     "  /attractor run <workflow> --goal \"...\" [options]",
     "  /attractor validate <workflow>",
+    "  /attractor show <workflow> [--format ascii|boxart|dot]",
     "",
     "Run options:",
     "  --goal <text>       Pipeline goal (required unless graph has one)",
@@ -60,6 +72,10 @@ export function usageText(): string {
     "  --logs <dir>        Logs directory (default: .attractor/logs)",
     "  --tools <mode>      Tool mode: none | read-only | coding",
     "  --dry-run           Validate and print graph without executing",
+    "",
+    "Show options:",
+    "  --format <fmt>      Output format: ascii | boxart | dot (default: boxart)",
+    "                      Falls back to dot if graph-easy is not installed",
   ].join("\n");
 }
 
@@ -154,7 +170,7 @@ export function parseCommand(raw: string, cwd: string): ParsedCommand {
 
   const subcommand = tokens[0] as string;
 
-  if (subcommand !== "run" && subcommand !== "validate") {
+  if (subcommand !== "run" && subcommand !== "validate" && subcommand !== "show") {
     throw new CommandParseError(
       `Unknown subcommand: "${subcommand}"\n\n${usageText()}`,
     );
@@ -197,8 +213,20 @@ export function parseCommand(raw: string, cwd: string): ParsedCommand {
     return { subcommand: "validate", workflowPath };
   }
 
+  if (subcommand === "show") {
+    if (typeof flags.format === "string" && !VALID_SHOW_FORMATS.has(flags.format)) {
+      throw new CommandParseError(
+        `Invalid --format value: "${flags.format}". Must be one of: ascii, boxart, dot`,
+      );
+    }
+    return {
+      subcommand: "show",
+      workflowPath,
+      format: typeof flags.format === "string" ? flags.format as ShowFormat : undefined,
+    };
+  }
+
   // Validate --tools value
-  const VALID_TOOL_MODES = new Set(["none", "read-only", "coding"]);
   if (typeof flags.tools === "string" && !VALID_TOOL_MODES.has(flags.tools)) {
     throw new CommandParseError(
       `Invalid --tools value: "${flags.tools}". Must be one of: none, read-only, coding`,

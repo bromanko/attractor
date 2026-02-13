@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, assert, beforeEach, afterEach } from "vitest";
 import { mkdtemp, writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -153,10 +153,62 @@ describe("parseCommand", () => {
   });
 });
 
+describe("parseCommand — show", () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "attractor-cmd-test-"));
+    await writeFile(join(tempDir, "test.awf.kdl"), 'workflow "x" { version 2 start "exit" stage "exit" kind="exit" }');
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it("parses show subcommand", () => {
+    const parsed = parseCommand("show test.awf.kdl", tempDir);
+    expect(parsed.subcommand).toBe("show");
+    expect(parsed.workflowPath).toBe(join(tempDir, "test.awf.kdl"));
+  });
+
+  it("parses show with --format flag", () => {
+    const parsed = parseCommand("show test.awf.kdl --format ascii", tempDir);
+    expect(parsed.subcommand).toBe("show");
+    assert(parsed.subcommand === "show");
+    expect(parsed.format).toBe("ascii");
+  });
+
+  it("accepts all valid format values", () => {
+    for (const fmt of ["ascii", "boxart", "dot"]) {
+      const parsed = parseCommand(`show test.awf.kdl --format ${fmt}`, tempDir);
+      assert(parsed.subcommand === "show");
+      expect(parsed.format).toBe(fmt);
+    }
+  });
+
+  it("defaults format to undefined when not specified", () => {
+    const parsed = parseCommand("show test.awf.kdl", tempDir);
+    assert(parsed.subcommand === "show");
+    expect(parsed.format).toBeUndefined();
+  });
+
+  it("treats bare --format (no value) as unset", () => {
+    const parsed = parseCommand("show test.awf.kdl --format", tempDir);
+    assert(parsed.subcommand === "show");
+    expect(parsed.format).toBeUndefined();
+  });
+
+  it("throws on invalid --format value", () => {
+    expect(() => parseCommand("show test.awf.kdl --format png", tempDir)).toThrow(CommandParseError);
+    expect(() => parseCommand("show test.awf.kdl --format png", tempDir)).toThrow(/Invalid --format value/);
+  });
+});
+
 describe("usageText", () => {
-  it("includes run and validate", () => {
+  it("includes run, validate, and show", () => {
     const text = usageText();
     expect(text).toContain("/attractor run");
     expect(text).toContain("/attractor validate");
+    expect(text).toContain("/attractor show");
   });
 });
