@@ -12,8 +12,27 @@ import { readFile } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { existsSync } from "node:fs";
-import { parseDot, validate, validateOrRaise, runPipeline, PiBackend, AutoApproveInterviewer } from "./pipeline/index.js";
-import type { PipelineEvent, Diagnostic, CodergenBackend, ToolMode, Interviewer, Checkpoint, Graph } from "./pipeline/index.js";
+import {
+  parseDot,
+  validate,
+  validateOrRaise,
+  runPipeline,
+  PiBackend,
+  AutoApproveInterviewer,
+  parseAwf2Kdl,
+  validateAwf2,
+  awf2ToGraph,
+} from "./pipeline/index.js";
+import type {
+  PipelineEvent,
+  Diagnostic,
+  CodergenBackend,
+  ToolMode,
+  Interviewer,
+  Checkpoint,
+  Graph,
+  Awf2Workflow,
+} from "./pipeline/index.js";
 import {
   AuthStorage,
   ModelRegistry,
@@ -100,6 +119,18 @@ function severityIcon(severity: Diagnostic["severity"]): string {
   }
 }
 
+function isKdlWorkflowPath(filePath: string): boolean {
+  return filePath.toLowerCase().endsWith(".kdl");
+}
+
+function parseWorkflowText(filePath: string, text: string): { graph: Graph; awf2?: Awf2Workflow } {
+  if (isKdlWorkflowPath(filePath)) {
+    const awf2 = parseAwf2Kdl(text);
+    return { graph: awf2ToGraph(awf2), awf2 };
+  }
+  return { graph: parseDot(text) };
+}
+
 /**
  * Resolve the per-stage model for a node, if it differs from the default.
  * Returns undefined if the node uses the default model.
@@ -121,8 +152,35 @@ function getStageModel(
 // ---------------------------------------------------------------------------
 
 async function cmdValidate(filePath: string): Promise<void> {
-  const dot = await readFile(resolve(filePath), "utf-8");
-  const graph = parseDot(dot);
+  const text = await readFile(resolve(filePath), "utf-8");
+
+  if (isKdlWorkflowPath(filePath)) {
+    const awf2 = parseAwf2Kdl(text);
+    const diagnostics = validateAwf2(awf2);
+    const errors = diagnostics.filter((d) => d.severity === "error");
+    const warnings = diagnostics.filter((d) => d.severity === "warning");
+
+    if (diagnostics.length === 0) {
+      console.log(`✅ ${filePath}: valid (${awf2.stages.length} stages)`);
+      console.log(`   Goal: ${awf2.goal ?? "(none)"}`);
+      console.log(`   Start: ${awf2.start}`);
+      console.log(`   Exit:  ${awf2.stages.filter((s) => s.kind === "exit").map((s) => s.id).join(", ") || "?"}`);
+      return;
+    }
+
+    for (const d of diagnostics) {
+      const location = d.node_id ? ` (node: ${d.node_id})` : d.edge ? ` (edge: ${d.edge[0]} → ${d.edge[1]})` : "";
+      console.log(`${severityIcon(d.severity)} [${d.rule}]${location}: ${d.message}`);
+      if (d.fix) console.log(`   Fix: ${d.fix}`);
+    }
+
+    console.log();
+    console.log(`${errors.length} error(s), ${warnings.length} warning(s)`);
+    if (errors.length > 0) process.exit(1);
+    return;
+  }
+
+  const graph = parseDot(text);
   const diagnostics = validate(graph);
   const errors = diagnostics.filter((d) => d.severity === "error");
   const warnings = diagnostics.filter((d) => d.severity === "warning");
@@ -142,9 +200,7 @@ async function cmdValidate(filePath: string): Promise<void> {
   }
 
   console.log();
-  console.log(
-    `${errors.length} error(s), ${warnings.length} warning(s)`,
-  );
+  console.log(`${errors.length} error(s), ${warnings.length} warning(s)`);
 
   if (errors.length > 0) process.exit(1);
 }
@@ -153,15 +209,28 @@ export async function cmdRun(
   filePath: string,
   args: Record<string, string | boolean>,
 ): Promise<void> {
-  const dot = await readFile(resolve(filePath), "utf-8");
-  const graph = parseDot(dot);
+  const text = await readFile(resolve(filePath), "utf-8");
+  const parsed = parseWorkflowText(filePath, text);
+  const graph = parsed.graph;
 
   // Apply --goal override before validation
   if (args.goal && typeof args.goal === "string") {
     graph.attrs.goal = args.goal;
+    if (parsed.awf2) {
+      parsed.awf2.goal = args.goal;
+    }
   }
 
-  validateOrRaise(graph);
+  if (parsed.awf2) {
+    const diags = validateAwf2(parsed.awf2);
+    const errors = diags.filter((d) => d.severity === "error");
+    if (errors.length > 0) {
+      const msg = errors.map((e) => `  [${e.rule}] ${e.message}`).join("\n");
+      throw new Error(`AWF2 validation failed:\n${msg}`);
+    }
+  } else {
+    validateOrRaise(graph);
+  }
 
   const modelName = (args.model as string) ?? "claude-opus-4-6";
   const providerName = (args.provider as string) ?? "anthropic";

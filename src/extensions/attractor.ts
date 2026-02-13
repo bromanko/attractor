@@ -20,6 +20,9 @@ import {
   runPipeline,
   PiBackend,
   AutoApproveInterviewer,
+  parseAwf2Kdl,
+  validateAwf2,
+  awf2ToGraph,
 } from "../pipeline/index.js";
 import type {
   PipelineEvent,
@@ -29,6 +32,7 @@ import type {
   Interviewer,
   CodergenBackend,
   ToolMode,
+  Awf2Workflow,
 } from "../pipeline/index.js";
 import { parseCommand, CommandParseError, usageText } from "./attractor-command.js";
 import type { ParsedRunCommand, ParsedValidateCommand } from "./attractor-command.js";
@@ -118,6 +122,18 @@ export default function attractorExtension(pi: ExtensionAPI): void {
   });
 }
 
+function isKdlWorkflowPath(path: string): boolean {
+  return path.toLowerCase().endsWith(".kdl");
+}
+
+function parseWorkflow(path: string, source: string): { graph: Graph; awf2?: Awf2Workflow } {
+  if (isKdlWorkflowPath(path)) {
+    const awf2 = parseAwf2Kdl(source);
+    return { graph: awf2ToGraph(awf2), awf2 };
+  }
+  return { graph: parseDot(source) };
+}
+
 // ---------------------------------------------------------------------------
 // /attractor validate
 // ---------------------------------------------------------------------------
@@ -126,8 +142,45 @@ async function handleValidate(
   cmd: ParsedValidateCommand,
   ctx: ExtensionCommandContext,
 ): Promise<void> {
-  const dot = await readFile(cmd.workflowPath, "utf-8");
-  const graph = parseDot(dot);
+  const source = await readFile(cmd.workflowPath, "utf-8");
+
+  if (isKdlWorkflowPath(cmd.workflowPath)) {
+    const awf2 = parseAwf2Kdl(source);
+    const diagnostics = validateAwf2(awf2);
+    const errors = diagnostics.filter((d: Diagnostic) => d.severity === "error");
+    const warnings = diagnostics.filter((d: Diagnostic) => d.severity === "warning");
+
+    if (diagnostics.length === 0) {
+      const exits = awf2.stages.filter((s) => s.kind === "exit").map((s) => s.id).join(", ") || "?";
+      ctx.ui.notify(
+        `✅ Valid (${awf2.stages.length} stages)\n` +
+        `Goal: ${awf2.goal ?? "(none)"}\n` +
+        `Start: ${awf2.start} → Exit: ${exits}`,
+        "info",
+      );
+      return;
+    }
+
+    const lines: string[] = [];
+    for (const d of diagnostics) {
+      const icon = d.severity === "error" ? "❌" : d.severity === "warning" ? "⚠️" : "ℹ️";
+      const loc = d.node_id
+        ? ` (node: ${d.node_id})`
+        : d.edge
+          ? ` (edge: ${d.edge[0]} → ${d.edge[1]})`
+          : "";
+      lines.push(`${icon} [${d.rule}]${loc}: ${d.message}`);
+      if (d.fix) lines.push(`   Fix: ${d.fix}`);
+    }
+    lines.push("");
+    lines.push(`${errors.length} error(s), ${warnings.length} warning(s)`);
+
+    const type = errors.length > 0 ? "error" : "warning";
+    ctx.ui.notify(lines.join("\n"), type as "error" | "warning");
+    return;
+  }
+
+  const graph = parseDot(source);
   const diagnostics = validate(graph);
   const errors = diagnostics.filter((d: Diagnostic) => d.severity === "error");
   const warnings = diagnostics.filter((d: Diagnostic) => d.severity === "warning");
@@ -174,15 +227,26 @@ async function handleRun(
   ctx: ExtensionCommandContext,
   pi: ExtensionAPI,
 ): Promise<void> {
-  const dot = await readFile(cmd.workflowPath, "utf-8");
-  const graph = parseDot(dot);
+  const source = await readFile(cmd.workflowPath, "utf-8");
+  const parsed = parseWorkflow(cmd.workflowPath, source);
+  const graph = parsed.graph;
 
   // Apply goal override
   if (cmd.goal) {
     graph.attrs.goal = cmd.goal;
+    if (parsed.awf2) parsed.awf2.goal = cmd.goal;
   }
 
-  validateOrRaise(graph);
+  if (parsed.awf2) {
+    const diags = validateAwf2(parsed.awf2);
+    const errors = diags.filter((d) => d.severity === "error");
+    if (errors.length > 0) {
+      const msg = errors.map((e) => `[${e.rule}] ${e.message}`).join("\n");
+      throw new Error(`AWF2 validation failed:\n${msg}`);
+    }
+  } else {
+    validateOrRaise(graph);
+  }
 
   // Dry run
   if (cmd.dryRun) {

@@ -79,6 +79,8 @@ export type {
   Awf2Diagnostic,
 } from "./awf2-types.js";
 export { validateAwf2, validateAwf2OrRaise } from "./awf2-validator.js";
+export { parseAwf2Kdl } from "./awf2-kdl-parser.js";
+export { parseAwf2Workflow, awf2ToGraph, parseWorkflowToGraph } from "./awf2-loader.js";
 
 // Pi SDK Backend
 export { PiBackend } from "../pi-backend.js";

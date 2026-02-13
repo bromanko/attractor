@@ -49,7 +49,16 @@ describe("resolveWorkflowPath", () => {
     expect(resolveWorkflowPath(tempDir, "pipeline.dot")).toBe(dotFile);
   });
 
-  it("resolves a bare name to .attractor/workflows/<name>.dot", async () => {
+  it("resolves a bare name to .attractor/workflows/<name>.awf.kdl first", async () => {
+    const wfDir = join(tempDir, ".attractor", "workflows");
+    await mkdir(wfDir, { recursive: true });
+    const kdlFile = join(wfDir, "deploy.awf.kdl");
+    await writeFile(kdlFile, "workflow \"x\" { version 2 start \"exit\" stage \"exit\" kind=\"exit\" }");
+
+    expect(resolveWorkflowPath(tempDir, "deploy")).toBe(kdlFile);
+  });
+
+  it("falls back to .attractor/workflows/<name>.dot", async () => {
     const wfDir = join(tempDir, ".attractor", "workflows");
     await mkdir(wfDir, { recursive: true });
     const dotFile = join(wfDir, "deploy.dot");

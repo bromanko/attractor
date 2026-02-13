@@ -72,8 +72,8 @@ export function usageText(): string {
  *
  * Resolution order:
  * 1. If the value is an existing file path (absolute or relative), use it directly.
- * 2. If it looks like a bare name (no path separators, no .dot extension),
- *    look in `.attractor/workflows/<name>.dot`.
+ * 2. If it looks like a bare name (no path separators, no extension),
+ *    look in `.attractor/workflows/<name>.awf.kdl`, then `<name>.dot`.
  * 3. Return an error with actionable guidance.
  */
 export function resolveWorkflowPath(
@@ -84,24 +84,28 @@ export function resolveWorkflowPath(
   const direct = resolve(cwd, ref);
   if (existsSync(direct)) return direct;
 
-  // 2. Bare name → .attractor/workflows/<name>.dot
+  // 2. Bare name → .attractor/workflows/<name>.awf.kdl, then .dot
   const isBare = !ref.includes("/") && !ref.includes("\\") && extname(ref) === "";
   if (isBare) {
-    const conventional = resolve(cwd, ".attractor", "workflows", `${ref}.dot`);
-    if (existsSync(conventional)) return conventional;
+    const awf2Path = resolve(cwd, ".attractor", "workflows", `${ref}.awf.kdl`);
+    if (existsSync(awf2Path)) return awf2Path;
+
+    const dotPath = resolve(cwd, ".attractor", "workflows", `${ref}.dot`);
+    if (existsSync(dotPath)) return dotPath;
 
     throw new CommandParseError(
       `Workflow "${ref}" not found.\n` +
       `Searched:\n` +
       `  ${direct}\n` +
-      `  ${conventional}\n` +
+      `  ${awf2Path}\n` +
+      `  ${dotPath}\n` +
       `Place workflow files in .attractor/workflows/ or provide a full path.`,
     );
   }
 
   throw new CommandParseError(
     `Workflow file not found: ${direct}\n` +
-    `Provide a valid path to a .dot workflow file.`,
+    `Provide a valid path to a .awf.kdl or .dot workflow file.`,
   );
 }
 
