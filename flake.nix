@@ -47,6 +47,7 @@
             nodejs_22
             corepack_22
             selfci-pkg
+            graph-easy
           ];
 
           shellHook = ''

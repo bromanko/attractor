@@ -51,6 +51,10 @@ Run, at minimum:
 
 If the change is isolated and full tests are expensive, run the most relevant test subset and state what was run.
 
+## Development methodology
+
+- **Prefer red-green TDD when adding new features.** Write a failing test first that captures the desired behavior, then implement the minimal code to make it pass, then refactor. This ensures every new feature ships with test coverage from the start and prevents gaps like untested CLI commands.
+
 ## Code style expectations
 
 - TypeScript `strict` mode is enabled: avoid `any` and unsafe casts.
