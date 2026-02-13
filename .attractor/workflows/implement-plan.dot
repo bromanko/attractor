@@ -39,6 +39,7 @@ Write all necessary code changes and tests.",
         label="Review: code quality",
         llm_model="claude-opus-4-6",
         llm_provider="anthropic",
+        auto_status=true,
         prompt_file=".pi/skills/attractor-typescript-code-review/SKILL.md",
         prompt="Review the code changes made in this workspace.\n\
 Focus only on changed files for the goal: $goal\n\
@@ -50,6 +51,7 @@ Otherwise output [STATUS: success]."
         label="Review: security",
         llm_model="claude-opus-4-6",
         llm_provider="anthropic",
+        auto_status=true,
         prompt_file=".pi/skills/attractor-typescript-security-review/SKILL.md",
         prompt="Review the code changes made in this workspace for security concerns.\n\
 Focus only on changed files for the goal: $goal\n\
@@ -61,6 +63,7 @@ Otherwise output [STATUS: success]."
         label="Review: performance",
         llm_model="claude-opus-4-6",
         llm_provider="anthropic",
+        auto_status=true,
         prompt_file=".pi/skills/attractor-typescript-performance-review/SKILL.md",
         prompt="Review the code changes made in this workspace for performance.\n\
 Focus only on changed files for the goal: $goal\n\
@@ -72,6 +75,7 @@ Otherwise output [STATUS: success]."
         label="Review: tests",
         llm_model="claude-opus-4-6",
         llm_provider="anthropic",
+        auto_status=true,
         prompt_file=".pi/skills/attractor-typescript-test-review/SKILL.md",
         prompt="Review the test coverage for changes in this workspace.\n\
 Focus only on changed files for the goal: $goal\n\

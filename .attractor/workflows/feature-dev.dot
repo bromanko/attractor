@@ -40,6 +40,7 @@ Output the plan as a numbered list of concrete steps."
         label="Review plan (LLM)",
         llm_model="gpt-5.3-codex",
         llm_provider="openai-codex",
+        auto_status=true,
         prompt="You are a senior engineer reviewing an implementation plan.\n\n\
 Review the plan from the previous stage for:\n\
 1. Completeness — does it cover all cases?\n\
@@ -84,6 +85,7 @@ Write all necessary code changes and tests.",
         label="Review: code quality",
         llm_model="gpt-5.3-codex",
         llm_provider="openai-codex",
+        auto_status=true,
         prompt_file=".pi/skills/attractor-typescript-code-review/SKILL.md",
         prompt="Review the code changes made in this workspace.\n\
 Focus only on changed files for the goal: $goal\n\
@@ -95,6 +97,7 @@ Otherwise output [STATUS: success]."
         label="Review: security",
         llm_model="gpt-5.3-codex",
         llm_provider="openai-codex",
+        auto_status=true,
         prompt_file=".pi/skills/attractor-typescript-security-review/SKILL.md",
         prompt="Review the code changes made in this workspace for security concerns.\n\
 Focus only on changed files for the goal: $goal\n\
@@ -106,6 +109,7 @@ Otherwise output [STATUS: success]."
         label="Review: performance",
         llm_model="gpt-5.3-codex",
         llm_provider="openai-codex",
+        auto_status=true,
         prompt_file=".pi/skills/attractor-typescript-performance-review/SKILL.md",
         prompt="Review the code changes made in this workspace for performance.\n\
 Focus only on changed files for the goal: $goal\n\
@@ -117,6 +121,7 @@ Otherwise output [STATUS: success]."
         label="Review: tests",
         llm_model="gpt-5.3-codex",
         llm_provider="openai-codex",
+        auto_status=true,
         prompt_file=".pi/skills/attractor-typescript-test-review/SKILL.md",
         prompt="Review the test coverage for changes in this workspace.\n\
 Focus only on changed files for the goal: $goal\n\

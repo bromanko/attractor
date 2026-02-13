@@ -14,6 +14,7 @@ digraph PlanningPlanReviewFail {
 
   plan_review [
     label="Review plan (LLM)",
+    auto_status=true,
     prompt="You are simulating a failed planning review for test purposes.\n\
 Return exactly:\n\
 [STATUS: fail]\n\

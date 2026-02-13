@@ -38,6 +38,7 @@ Keep it concise and actionable — this is a planning document, not a specificat
         label="Review plan (LLM)",
         llm_model="gpt-5.3-codex",
         llm_provider="openai-codex",
+        auto_status=true,
         prompt="You are a senior engineer reviewing an implementation plan.\n\n\
 Review the plan from the previous stage for:\n\
 1. **Completeness** — does it cover the important cases?\n\
