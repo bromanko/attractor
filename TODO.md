@@ -18,6 +18,9 @@
 - [x] **Structured review stage output (`review_code`)** — Severity-based diagnostics with structured rendering via pi extensions and validator.
 - [x] **Workflow usage/cost metrics in CLI output** — Per-stage usage tracking (input/output/cache tokens + cost), `usage_update` events, final summary with per-stage breakdown table, graceful degradation when unavailable.
 
+- [ ] **Multi-line input for plan revision** — When revising a plan at a human gate, the input is limited to a single line. Support multi-line input so the reviewer can provide detailed, structured revision instructions.
+- [ ] **Show full plan in output pane** — Present the entire plan content in the output pane so the reviewer can read and evaluate it directly without switching context or scrolling through logs.
+
 ## Trust & Signal Integrity
 
 - [x] **Prevent LLM self-assessment in fix/implement stages** — Codergen nodes (shape `box`) now ignore `[STATUS:]` markers by default. Review/verification nodes opt in with `auto_status=true`. Routing markers (`PREFERRED_LABEL`, `NEXT`) are always parsed.
