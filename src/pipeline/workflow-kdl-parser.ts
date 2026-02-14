@@ -482,6 +482,7 @@ export function parseWorkflowKdl(source: string): WorkflowDefinition {
 
   const versionNode = root.children.find((c) => c.name === "version");
   const startNode = root.children.find((c) => c.name === "start");
+  const descriptionNode = root.children.find((c) => c.name === "description");
   const goalNode = root.children.find((c) => c.name === "goal");
 
   if (!versionNode) throw new Error("KDL conversion error: missing version node");
@@ -498,6 +499,7 @@ export function parseWorkflowKdl(source: string): WorkflowDefinition {
   const workflow: WorkflowDefinition = {
     version: 2,
     name,
+    description: descriptionNode ? scalarString(descriptionNode, 0, "workflow.description") : undefined,
     goal: goalNode ? scalarString(goalNode, 0, "workflow.goal") : undefined,
     start: scalarString(startNode, 0, "workflow.start"),
     models: modelsNode ? parseModels(modelsNode.children) : undefined,

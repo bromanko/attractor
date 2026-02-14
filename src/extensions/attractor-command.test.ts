@@ -7,6 +7,7 @@ import {
   resolveWorkflowPath,
   tokenize,
   usageText,
+  discoverWorkflows,
   CommandParseError,
 } from "./attractor-command.js";
 
@@ -97,12 +98,11 @@ describe("parseCommand", () => {
 
   it("parses run subcommand with flags", () => {
     const parsed = parseCommand(
-      'run test.awf.kdl --goal "implement feature" --approve-all --dry-run',
+      'run test.awf.kdl --approve-all --dry-run',
       tempDir,
     );
     expect(parsed.subcommand).toBe("run");
     if (parsed.subcommand === "run") {
-      expect(parsed.goal).toBe("implement feature");
       expect(parsed.approveAll).toBe(true);
       expect(parsed.dryRun).toBe(true);
       expect(parsed.resume).toBe(false);
@@ -133,9 +133,25 @@ describe("parseCommand", () => {
     expect(() => parseCommand("deploy test.awf.kdl", tempDir)).toThrow(/Unknown subcommand/);
   });
 
-  it("throws on missing workflow", () => {
-    expect(() => parseCommand("run", tempDir)).toThrow(CommandParseError);
-    expect(() => parseCommand("run", tempDir)).toThrow(/Missing workflow/);
+  it("allows missing workflow for run (guided mode)", () => {
+    const parsed = parseCommand("run", tempDir);
+    expect(parsed.subcommand).toBe("run");
+    if (parsed.subcommand === "run") {
+      expect(parsed.workflowPath).toBeUndefined();
+    }
+  });
+
+  it("allows missing workflow for validate (guided mode)", () => {
+    const parsed = parseCommand("validate", tempDir);
+    expect(parsed.subcommand).toBe("validate");
+    if (parsed.subcommand === "validate") {
+      expect(parsed.workflowPath).toBeUndefined();
+    }
+  });
+
+  it("throws on missing workflow for show", () => {
+    expect(() => parseCommand("show", tempDir)).toThrow(CommandParseError);
+    expect(() => parseCommand("show", tempDir)).toThrow(/Missing workflow/);
   });
 
   it("throws on invalid --tools value", () => {
@@ -210,5 +226,82 @@ describe("usageText", () => {
     expect(text).toContain("/attractor run");
     expect(text).toContain("/attractor validate");
     expect(text).toContain("/attractor show");
+  });
+
+  it("does not mention --goal", () => {
+    const text = usageText();
+    expect(text).not.toContain("--goal");
+  });
+});
+
+describe("discoverWorkflows", () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "attractor-discover-test-"));
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it("returns empty when .attractor/workflows does not exist", async () => {
+    const result = await discoverWorkflows(tempDir, () => ({ name: "x", stages: [] }));
+    expect(result.entries).toEqual([]);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("discovers workflows from .attractor/workflows", async () => {
+    const wfDir = join(tempDir, ".attractor", "workflows");
+    await mkdir(wfDir, { recursive: true });
+    await writeFile(
+      join(wfDir, "deploy.awf.kdl"),
+      'workflow "deploy" { version 2 start "exit" stage "exit" kind="exit" }',
+    );
+    await writeFile(
+      join(wfDir, "build.awf.kdl"),
+      'workflow "build" { version 2 description "Build the project" start "exit" stage "exit" kind="exit" }',
+    );
+
+    const mockParser = (source: string) => {
+      if (source.includes("deploy")) return { name: "deploy", stages: [{ id: "exit" }] };
+      return { name: "build", description: "Build the project", stages: [{ id: "exit" }] };
+    };
+
+    const result = await discoverWorkflows(tempDir, mockParser);
+    expect(result.entries).toHaveLength(2);
+    // Sorted by name
+    expect(result.entries[0]!.name).toBe("build");
+    expect(result.entries[0]!.description).toBe("Build the project");
+    expect(result.entries[0]!.stageCount).toBe(1);
+    expect(result.entries[1]!.name).toBe("deploy");
+    expect(result.entries[1]!.description).toBeUndefined();
+  });
+
+  it("skips non-.awf.kdl files", async () => {
+    const wfDir = join(tempDir, ".attractor", "workflows");
+    await mkdir(wfDir, { recursive: true });
+    await writeFile(join(wfDir, "readme.md"), "# Hello");
+    await writeFile(
+      join(wfDir, "deploy.awf.kdl"),
+      'workflow "deploy" { }',
+    );
+
+    const mockParser = () => ({ name: "deploy", stages: [] });
+    const result = await discoverWorkflows(tempDir, mockParser);
+    expect(result.entries).toHaveLength(1);
+  });
+
+  it("reports parse failures as warnings", async () => {
+    const wfDir = join(tempDir, ".attractor", "workflows");
+    await mkdir(wfDir, { recursive: true });
+    await writeFile(join(wfDir, "bad.awf.kdl"), "not valid kdl");
+
+    const mockParser = () => { throw new Error("parse failed"); };
+    const result = await discoverWorkflows(tempDir, mockParser);
+    expect(result.entries).toEqual([]);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain("bad.awf.kdl");
+    expect(result.warnings[0]).toContain("parse failed");
   });
 });

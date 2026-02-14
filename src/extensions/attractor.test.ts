@@ -12,6 +12,7 @@ import type { PipelineEvent } from "../pipeline/types.js";
 const registeredCommands = new Map<string, { handler: Function; description?: string; getArgumentCompletions?: Function }>();
 
 let runPipelineImpl: ((config: any) => Promise<any>) | undefined;
+let parseWorkflowKdlImpl: ((source: string) => any) | undefined;
 
 const execFileMock = vi.fn();
 
@@ -36,7 +37,10 @@ vi.mock("../pipeline/index.js", () => {
     edge_defaults: {},
   };
   return {
-    parseWorkflowKdl: vi.fn(() => ({ version: 2, name: "wf", start: "start", stages: [] })),
+    parseWorkflowKdl: vi.fn((source: string) => {
+      if (parseWorkflowKdlImpl) return parseWorkflowKdlImpl(source);
+      return { version: 2, name: "wf", start: "start", goal: "test goal", stages: [{ id: "exit", kind: "exit" }] };
+    }),
     workflowToGraph: vi.fn(() => graph),
     validateWorkflow: vi.fn(() => []),
     graphToDot: vi.fn(() => 'digraph "TestPipeline" {\n  start -> work\n  work -> exit\n}'),
@@ -164,6 +168,7 @@ describe("attractor extension", () => {
   beforeEach(async () => {
     registeredCommands.clear();
     runPipelineImpl = undefined;
+    parseWorkflowKdlImpl = undefined;
     execFileMock.mockReset();
     tempDir = await mkdtemp(join(tmpdir(), "attractor-ext-test-"));
     dotFile = join(tempDir, "test.awf.kdl");
@@ -422,6 +427,149 @@ describe("attractor extension", () => {
       await handler("run nonexistent.awf.kdl", ctx);
       expect(ctx.ui.notify).toHaveBeenCalledWith(
         expect.stringContaining("not found"),
+        "error",
+      );
+    });
+
+    it("shows workflow preview before execution", async () => {
+      const pi = makePi();
+      attractorExtension(pi);
+      const ctx = makeCtx(tempDir) as any;
+      const handler = registeredCommands.get("attractor")!.handler;
+      await handler(`run ${dotFile}`, ctx);
+
+      const notifyCalls = ctx._notifyCalls as Array<{ msg: string; type?: string }>;
+      const previewCall = notifyCalls.find((c: any) => c.msg.includes("Workflow:"));
+      expect(previewCall).toBeDefined();
+    });
+
+    it("prompts for goal when workflow has no goal", async () => {
+      // Override parseWorkflowKdl to return a workflow without goal
+      parseWorkflowKdlImpl = () => ({
+        version: 2,
+        name: "wf",
+        start: "start",
+        stages: [{ id: "exit", kind: "exit" }],
+        // no goal
+      });
+
+      const pi = makePi();
+      attractorExtension(pi);
+      const ctx = makeCtx(tempDir);
+      (ctx.ui.input as any).mockResolvedValueOnce("My test goal");
+      const handler = registeredCommands.get("attractor")!.handler;
+      await handler(`run ${dotFile}`, ctx);
+
+      expect(ctx.ui.input).toHaveBeenCalledWith("Enter the pipeline goal");
+    });
+
+    it("cancels when goal prompt is cancelled", async () => {
+      parseWorkflowKdlImpl = () => ({
+        version: 2,
+        name: "wf",
+        start: "start",
+        stages: [{ id: "exit", kind: "exit" }],
+      });
+
+      const { runPipeline } = await import("../pipeline/index.js");
+      (runPipeline as any).mockClear();
+      const pi = makePi();
+      attractorExtension(pi);
+      const ctx = makeCtx(tempDir);
+      (ctx.ui.input as any).mockResolvedValueOnce(undefined); // cancelled
+      const handler = registeredCommands.get("attractor")!.handler;
+      await handler(`run ${dotFile}`, ctx);
+
+      // Pipeline should not have been called
+      expect(runPipeline).not.toHaveBeenCalled();
+    });
+
+    it("skips goal prompt on --resume", async () => {
+      const pi = makePi();
+      attractorExtension(pi);
+      const ctx = makeCtx(tempDir);
+      const handler = registeredCommands.get("attractor")!.handler;
+      await handler(`run ${dotFile} --resume`, ctx);
+
+      // input should never be called for goal
+      expect(ctx.ui.input).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("guided workflow selection", () => {
+    it("run with no workflow opens picker", async () => {
+      // Set up workflows directory
+      const wfDir = join(tempDir, ".attractor", "workflows");
+      const { mkdir, writeFile: wf } = await import("node:fs/promises");
+      await mkdir(wfDir, { recursive: true });
+      await wf(join(wfDir, "deploy.awf.kdl"), 'workflow "deploy" { version 2 start "exit" stage "exit" kind="exit" }');
+
+      const pi = makePi();
+      attractorExtension(pi);
+      const ctx = makeCtx(tempDir);
+      // Mock parser returns name "wf", so select that
+      (ctx.ui.select as any).mockResolvedValueOnce("wf");
+      const handler = registeredCommands.get("attractor")!.handler;
+      await handler("run", ctx);
+
+      expect(ctx.ui.select).toHaveBeenCalledWith(
+        "Select a workflow",
+        expect.any(Array),
+      );
+    });
+
+    it("picker cancel exits without side effects", async () => {
+      const wfDir = join(tempDir, ".attractor", "workflows");
+      const { mkdir, writeFile: wf } = await import("node:fs/promises");
+      await mkdir(wfDir, { recursive: true });
+      await wf(join(wfDir, "deploy.awf.kdl"), 'workflow "deploy" { version 2 start "exit" stage "exit" kind="exit" }');
+
+      const { runPipeline } = await import("../pipeline/index.js");
+      (runPipeline as any).mockClear();
+      const pi = makePi();
+      attractorExtension(pi);
+      const ctx = makeCtx(tempDir);
+      (ctx.ui.select as any).mockResolvedValueOnce(undefined); // cancelled
+      const handler = registeredCommands.get("attractor")!.handler;
+      await handler("run", ctx);
+
+      expect(runPipeline).not.toHaveBeenCalled();
+    });
+
+    it("validate with no workflow opens picker", async () => {
+      const wfDir = join(tempDir, ".attractor", "workflows");
+      const { mkdir, writeFile: wf } = await import("node:fs/promises");
+      await mkdir(wfDir, { recursive: true });
+      await wf(join(wfDir, "check.awf.kdl"), 'workflow "check" { version 2 start "exit" stage "exit" kind="exit" }');
+
+      const pi = makePi();
+      attractorExtension(pi);
+      const ctx = makeCtx(tempDir);
+      // Mock returns name "wf" for all parses, so select that
+      (ctx.ui.select as any).mockResolvedValueOnce("wf");
+      const handler = registeredCommands.get("attractor")!.handler;
+      await handler("validate", ctx);
+
+      expect(ctx.ui.select).toHaveBeenCalledWith(
+        "Select a workflow",
+        expect.any(Array),
+      );
+      // Should have shown validation result
+      expect(ctx.ui.notify).toHaveBeenCalledWith(
+        expect.stringContaining("Valid"),
+        "info",
+      );
+    });
+
+    it("shows error when no workflows found", async () => {
+      const pi = makePi();
+      attractorExtension(pi);
+      const ctx = makeCtx(tempDir);
+      const handler = registeredCommands.get("attractor")!.handler;
+      await handler("run", ctx);
+
+      expect(ctx.ui.notify).toHaveBeenCalledWith(
+        expect.stringContaining("No workflows found"),
         "error",
       );
     });

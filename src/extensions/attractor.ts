@@ -33,8 +33,8 @@ import type {
   ToolMode,
   WorkflowDefinition,
 } from "../pipeline/index.js";
-import { parseCommand, CommandParseError } from "./attractor-command.js";
-import type { ParsedRunCommand, ParsedValidateCommand, ParsedShowCommand, ShowFormat } from "./attractor-command.js";
+import { parseCommand, CommandParseError, discoverWorkflows } from "./attractor-command.js";
+import type { ParsedRunCommand, ParsedValidateCommand, ParsedShowCommand, ShowFormat, WorkflowCatalogEntry } from "./attractor-command.js";
 import { PiInterviewer } from "./attractor-interviewer.js";
 import { AttractorPanel, CUSTOM_MESSAGE_TYPE } from "./attractor-panel.js";
 import type { StageMessageDetails } from "./attractor-panel.js";
@@ -85,8 +85,17 @@ export default function attractorExtension(pi: ExtensionAPI): void {
         { value: "validate", label: "validate — Check pipeline graph" },
         { value: "show", label: "show — Visualize a pipeline graph" },
       ];
-      const filtered = subcommands.filter((s) => s.value.startsWith(prefix));
-      return filtered.length > 0 ? filtered : null;
+
+      // If prefix is empty or partially matches a subcommand, show subcommands
+      const trimmed = prefix.trim();
+      if (!trimmed.includes(" ")) {
+        const filtered = subcommands.filter((s) => s.value.startsWith(trimmed));
+        return filtered.length > 0 ? filtered : null;
+      }
+
+      // After subcommand, complete workflow names
+      // (async discovery not available in sync completions — use cached entries)
+      return null;
     },
 
     handler: async (args: string, ctx: ExtensionCommandContext) => {
@@ -123,6 +132,70 @@ export default function attractorExtension(pi: ExtensionAPI): void {
       }
     },
   });
+}
+
+// ---------------------------------------------------------------------------
+// Guided workflow selection + goal prompt
+// ---------------------------------------------------------------------------
+
+async function pickWorkflow(
+  ctx: ExtensionCommandContext,
+): Promise<WorkflowCatalogEntry | undefined> {
+  const { entries, warnings } = await discoverWorkflows(ctx.cwd, parseWorkflowKdl);
+
+  for (const w of warnings) {
+    ctx.ui.notify(w, "warning");
+  }
+
+  if (entries.length === 0) {
+    ctx.ui.notify(
+      "No workflows found in .attractor/workflows/\n" +
+      "Place .awf.kdl files there or provide a workflow path directly.",
+      "error",
+    );
+    return undefined;
+  }
+
+  const options = entries.map((e) => ({
+    value: e.name,
+    label: e.description
+      ? `${e.name} — ${e.description} (${e.stageCount} stages)`
+      : `${e.name} (${e.stageCount} stages)`,
+  }));
+
+  const selected = await ctx.ui.select("Select a workflow", options);
+  if (selected === undefined) return undefined;
+
+  return entries.find((e) => e.name === selected);
+}
+
+async function promptGoal(
+  ctx: ExtensionCommandContext,
+): Promise<string | undefined> {
+  while (true) {
+    const goal = await ctx.ui.input("Enter the pipeline goal");
+    if (goal === undefined) return undefined; // cancelled
+    const trimmed = goal.trim();
+    if (trimmed.length > 0) return trimmed;
+    ctx.ui.notify("Goal cannot be empty. Please enter a goal or press Escape to cancel.", "warning");
+  }
+}
+
+function formatWorkflowPreview(
+  workflow: WorkflowDefinition,
+  workflowPath: string,
+): string {
+  const lines: string[] = [];
+  lines.push(`Workflow: ${workflow.name}`);
+  if (workflow.description) {
+    lines.push(`Description: ${workflow.description}`);
+  }
+  lines.push(`Path: ${workflowPath}`);
+  lines.push(`Stages: ${workflow.stages.length}`);
+  lines.push(`Start: ${workflow.start}`);
+  const exits = workflow.stages.filter((s) => s.kind === "exit").map((s) => s.id).join(", ") || "?";
+  lines.push(`Exit: ${exits}`);
+  return lines.join("\n");
 }
 
 function isKdlWorkflowPath(path: string): boolean {
@@ -191,9 +264,17 @@ async function handleValidate(
   cmd: ParsedValidateCommand,
   ctx: ExtensionCommandContext,
 ): Promise<void> {
-  const source = await readFile(cmd.workflowPath, "utf-8");
+  // Guided mode: prompt for workflow if not specified
+  let workflowPath = cmd.workflowPath;
+  if (!workflowPath) {
+    const entry = await pickWorkflow(ctx);
+    if (!entry) return;
+    workflowPath = entry.path;
+  }
 
-  if (!isKdlWorkflowPath(cmd.workflowPath)) {
+  const source = await readFile(workflowPath, "utf-8");
+
+  if (!isKdlWorkflowPath(workflowPath)) {
     throw new Error("Only .awf.kdl workflow files are supported.");
   }
 
@@ -240,15 +321,31 @@ async function handleRun(
   ctx: ExtensionCommandContext,
   pi: ExtensionAPI,
 ): Promise<void> {
-  const source = await readFile(cmd.workflowPath, "utf-8");
-  const parsed = parseWorkflow(cmd.workflowPath, source);
+  // Guided mode: prompt for workflow if not specified
+  let workflowPath = cmd.workflowPath;
+  if (!workflowPath) {
+    const entry = await pickWorkflow(ctx);
+    if (!entry) return;
+    workflowPath = entry.path;
+  }
+
+  const source = await readFile(workflowPath, "utf-8");
+  const parsed = parseWorkflow(workflowPath, source);
   const graph = parsed.graph;
 
-  // Apply goal override
-  if (cmd.goal) {
-    graph.attrs.goal = cmd.goal;
-    parsed.workflow.goal = cmd.goal;
+  // Goal handling: prompt for goal on non-resume runs
+  if (!cmd.resume) {
+    // If workflow has no goal, prompt for one
+    if (!parsed.workflow.goal) {
+      const goal = await promptGoal(ctx);
+      if (goal === undefined) return; // cancelled
+      graph.attrs.goal = goal;
+      parsed.workflow.goal = goal;
+    }
   }
+
+  // Show workflow preview
+  ctx.ui.notify(formatWorkflowPreview(parsed.workflow, workflowPath), "info");
 
   const diags = validateWorkflow(parsed.workflow);
   const errors = diags.filter((d) => d.severity === "error");

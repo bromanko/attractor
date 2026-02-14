@@ -19,8 +19,7 @@ export type Subcommand = "run" | "validate" | "show";
 
 export type ParsedRunCommand = {
   subcommand: "run";
-  workflowPath: string;
-  goal?: string;
+  workflowPath?: string;
   resume: boolean;
   approveAll: boolean;
   logs?: string;
@@ -30,7 +29,7 @@ export type ParsedRunCommand = {
 
 export type ParsedValidateCommand = {
   subcommand: "validate";
-  workflowPath: string;
+  workflowPath?: string;
 };
 
 export type ShowFormat = "ascii" | "boxart" | "dot";
@@ -61,12 +60,11 @@ export class CommandParseError extends Error {
 export function usageText(): string {
   return [
     "Usage:",
-    "  /attractor run <workflow> --goal \"...\" [options]",
-    "  /attractor validate <workflow>",
+    "  /attractor run [<workflow>] [options]",
+    "  /attractor validate [<workflow>]",
     "  /attractor show <workflow> [--format ascii|boxart|dot]",
     "",
     "Run options:",
-    "  --goal <text>       Pipeline goal (required unless graph has one)",
     "  --resume            Resume from last checkpoint",
     "  --approve-all       Auto-approve all human gates",
     "  --logs <dir>        Logs directory (default: .attractor/logs)",
@@ -76,6 +74,8 @@ export function usageText(): string {
     "Show options:",
     "  --format <fmt>      Output format: ascii | boxart | dot (default: boxart)",
     "                      Falls back to dot if graph-easy is not installed",
+    "",
+    "When <workflow> is omitted for run/validate, an interactive picker is shown.",
   ].join("\n");
 }
 
@@ -119,6 +119,62 @@ export function resolveWorkflowPath(
     `Workflow file not found: ${direct}\n` +
     `Provide a valid path to a .awf.kdl workflow file.`,
   );
+}
+
+// ---------------------------------------------------------------------------
+// Workflow discovery
+// ---------------------------------------------------------------------------
+
+export type WorkflowCatalogEntry = {
+  name: string;
+  path: string;
+  description?: string;
+  stageCount: number;
+};
+
+/**
+ * Discover workflow files from `.attractor/workflows/*.awf.kdl` in the given
+ * directory. Returns a sorted list of catalog entries. Files that fail to parse
+ * are skipped (returned as warnings).
+ */
+export async function discoverWorkflows(
+  cwd: string,
+  parseKdl: (source: string) => { name: string; description?: string; stages: unknown[] },
+): Promise<{ entries: WorkflowCatalogEntry[]; warnings: string[] }> {
+  const { readdir, readFile } = await import("node:fs/promises");
+  const { resolve: resolvePath, join: joinPath } = await import("node:path");
+
+  const workflowDir = resolvePath(cwd, ".attractor", "workflows");
+  const warnings: string[] = [];
+  const entries: WorkflowCatalogEntry[] = [];
+
+  let files: string[];
+  try {
+    files = await readdir(workflowDir);
+  } catch {
+    return { entries: [], warnings: [] };
+  }
+
+  const kdlFiles = files.filter((f) => f.endsWith(".awf.kdl")).sort();
+
+  for (const file of kdlFiles) {
+    const filePath = joinPath(workflowDir, file);
+    try {
+      const source = await readFile(filePath, "utf-8");
+      const workflow = parseKdl(source);
+      entries.push({
+        name: workflow.name,
+        path: filePath,
+        description: workflow.description,
+        stageCount: workflow.stages.length,
+      });
+    } catch (err) {
+      warnings.push(`Failed to parse ${file}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  entries.sort((a, b) => a.name.localeCompare(b.name));
+  return { entries, warnings };
 }
 
 // ---------------------------------------------------------------------------
@@ -201,19 +257,18 @@ export function parseCommand(raw: string, cwd: string): ParsedCommand {
     }
   }
 
-  if (!workflowRef) {
-    throw new CommandParseError(
-      `Missing workflow file.\n\n${usageText()}`,
-    );
-  }
-
-  const workflowPath = resolveWorkflowPath(cwd, workflowRef);
+  const workflowPath = workflowRef ? resolveWorkflowPath(cwd, workflowRef) : undefined;
 
   if (subcommand === "validate") {
     return { subcommand: "validate", workflowPath };
   }
 
   if (subcommand === "show") {
+    if (!workflowPath) {
+      throw new CommandParseError(
+        `Missing workflow file.\n\n${usageText()}`,
+      );
+    }
     if (typeof flags.format === "string" && !VALID_SHOW_FORMATS.has(flags.format)) {
       throw new CommandParseError(
         `Invalid --format value: "${flags.format}". Must be one of: ascii, boxart, dot`,
@@ -236,7 +291,6 @@ export function parseCommand(raw: string, cwd: string): ParsedCommand {
   return {
     subcommand: "run",
     workflowPath,
-    goal: typeof flags.goal === "string" ? flags.goal : undefined,
     resume: flags.resume === true,
     approveAll: flags["approve-all"] === true,
     logs: typeof flags.logs === "string" ? flags.logs : undefined,

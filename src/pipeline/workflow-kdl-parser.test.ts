@@ -151,6 +151,36 @@ describe("parseWorkflowKdl", () => {
     `)).toThrow(/requires boolean arg/);
   });
 
+  it("parses workflow with description", () => {
+    const wf = parseWorkflowKdl(`
+      workflow "deploy" {
+        version 2
+        description "Deploy the application to production"
+        start "plan"
+
+        stage "plan" kind="llm" prompt="Plan"
+        stage "exit" kind="exit"
+
+        transition from="plan" to="exit"
+      }
+    `);
+
+    expect(wf.description).toBe("Deploy the application to production");
+  });
+
+  it("workflows without description remain valid", () => {
+    const wf = parseWorkflowKdl(`
+      workflow "simple" {
+        version 2
+        start "exit"
+
+        stage "exit" kind="exit"
+      }
+    `);
+
+    expect(wf.description).toBeUndefined();
+  });
+
   it("parses human options and decision routes", () => {
     const wf = parseWorkflowKdl(`
       workflow "demo" {

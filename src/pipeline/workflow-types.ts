@@ -105,6 +105,7 @@ export type WorkflowTransition = {
 export type WorkflowDefinition = {
   version: 2;
   name: string;
+  description?: string;
   goal?: string;
   start: string;
   models?: WorkflowModels;
