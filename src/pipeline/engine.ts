@@ -5,7 +5,7 @@
 
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import type {
   Graph, GraphNode, GraphEdge, Outcome, Context as ContextType,
   Checkpoint, PipelineEvent, PipelineEventKind,
@@ -307,11 +307,44 @@ function emit(config: PipelineConfig, kind: PipelineEventKind, data: Record<stri
 }
 
 /**
+ * Resolve and validate `logsRoot` to prevent path-traversal writes.
+ *
+ * The resolved absolute path must not contain `..` segments after
+ * normalisation (Node's `resolve` already collapses them, so a remaining
+ * `..` would indicate something unexpected). Additionally, writing to
+ * well-known sensitive roots is rejected outright.
+ */
+function validateLogsRoot(logsRoot: string): string {
+  const resolved = resolve(logsRoot);
+
+  // After resolve(), `..` segments are collapsed. If any remain the path
+  // is malformed in a way we can't reason about — reject it.
+  if (resolved.split("/").includes("..")) {
+    throw new Error(
+      `logsRoot "${logsRoot}" resolves to a path containing ".." segments: ${resolved}`,
+    );
+  }
+
+  // Block writes to well-known system directories.
+  const blocked = ["/etc", "/usr", "/bin", "/sbin", "/lib", "/boot", "/proc", "/sys", "/dev"];
+  for (const prefix of blocked) {
+    if (resolved === prefix || resolved.startsWith(prefix + "/")) {
+      throw new Error(
+        `logsRoot "${logsRoot}" resolves to blocked system directory: ${resolved}`,
+      );
+    }
+  }
+
+  return resolved;
+}
+
+/**
  * Run a pipeline from start to finish.
  * Implements the core execution loop (Section 3.2).
  */
 export async function runPipeline(config: PipelineConfig): Promise<PipelineResult> {
-  const { graph, logsRoot } = config;
+  const logsRoot = validateLogsRoot(config.logsRoot);
+  const { graph } = config;
 
   // Force non-interactive editors for all subprocesses.
   // LLM agents may run jj/git commands that open an editor (e.g. jj squash),
@@ -347,7 +380,10 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
   if (!startId) throw new Error("No start node found.");
   const exitIds = new Set(findExitNodes(graph));
 
-  let currentNode = graph.nodes.find((n) => n.id === startId)!;
+  // Pre-build an index for O(1) node lookups by ID.
+  const nodeById = new Map(graph.nodes.map((n) => [n.id, n]));
+
+  let currentNode = nodeById.get(startId)!;
 
   // Resume from checkpoint
   const cp = config.checkpoint;
@@ -358,19 +394,60 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
       nodeRetries.set(id, count);
     }
 
-    // Resume at the node specified by resume_at (if set), otherwise re-run
-    // the last completed node (which was the one that failed).
-    const resumeId = cp.resume_at ?? cp.current_node;
-    const resumeNode = graph.nodes.find((n) => n.id === resumeId);
+    // Determine where to resume:
+    //   1. resume_at — explicit manual override (e.g. user edited checkpoint)
+    //   2. next_node — the resolved next node from edge selection (skip
+    //      re-execution of current_node which already completed)
+    //   3. current_node — fallback: re-execute the node (it may have failed
+    //      before edge selection ran, or checkpoint was saved by older code)
+    const resumeId = cp.resume_at ?? cp.next_node ?? cp.current_node;
+    const resumeNode = nodeById.get(resumeId);
     if (resumeNode) {
       currentNode = resumeNode;
-      // Mark everything before the resume node as completed (but not the
-      // resume node itself — it will be re-executed).
-      const idx = cp.completed_nodes.indexOf(resumeId);
-      const alreadyDone = idx >= 0
-        ? cp.completed_nodes.slice(0, idx)
-        : cp.completed_nodes;
-      completedNodes.push(...alreadyDone);
+
+      if (cp.resume_at || cp.next_node) {
+        // The current_node already completed — mark it and everything
+        // before it as done so it won't be re-executed.
+        // Deduplicate via Set in case completedNodes already has entries
+        // or the checkpoint contains duplicates.
+        const seen = new Set(completedNodes);
+        for (const n of cp.completed_nodes) {
+          if (!seen.has(n)) {
+            seen.add(n);
+            completedNodes.push(n);
+          }
+        }
+      } else {
+        // Falling back to current_node — re-execute it, so mark only
+        // the nodes before it as completed.
+        const idx = cp.completed_nodes.indexOf(resumeId);
+        const alreadyDone = idx >= 0
+          ? cp.completed_nodes.slice(0, idx)
+          : cp.completed_nodes;
+        const seen = new Set(completedNodes);
+        for (const n of alreadyDone) {
+          if (!seen.has(n)) {
+            seen.add(n);
+            completedNodes.push(n);
+          }
+        }
+      }
+    } else {
+      // The resolved resume target doesn't exist in the current graph.
+      // This typically means the workflow was modified after the checkpoint
+      // was saved (node renamed/removed). Distinguish from corruption by
+      // reporting which field supplied the dangling reference.
+      const source = cp.resume_at ? "resume_at"
+        : cp.next_node ? "next_node"
+        : "current_node";
+      const msg = `Checkpoint references node "${resumeId}" (via ${source}) which does not exist in the current graph. The workflow may have been modified since the checkpoint was saved.`;
+      emit(config, "pipeline_failed", { error: msg });
+      return {
+        status: "fail",
+        completedNodes,
+        lastOutcome: { status: "fail", failure_reason: msg },
+        usageSummary: buildUsageSummary(usageAttempts),
+      };
     }
 
     // Recover workspace if it was cleaned up on the previous failure
@@ -439,7 +516,7 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
 
     // Non-tool failures (LLM errors, backend failures, etc.)
     const reason = outcome.failure_reason ?? "Unknown failure";
-    const failedNode = graph.nodes.find((n) => n.id === failedNodeId);
+    const failedNode = nodeById.get(failedNodeId);
     const nodeType = failedNode?.attrs.type ?? failedNode?.attrs.shape ?? "unknown";
     const isLlm = nodeType === "box" || nodeType === "codergen";
     const failureClass = isLlm ? "llm_error" : "stage_error";
@@ -465,6 +542,7 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
   // Helper: check if cancelled and save checkpoint + emit event
   async function checkCancelled(
     currentNodeId: string,
+    nextNodeId?: string,
   ): Promise<PipelineResult | null> {
     if (!abortSignal?.aborted) return null;
 
@@ -472,6 +550,7 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
     const checkpoint: Checkpoint = {
       timestamp: new Date().toISOString(),
       current_node: currentNodeId,
+      next_node: nextNodeId,
       completed_nodes: [...completedNodes],
       node_retries: Object.fromEntries(nodeRetries),
       context_values: context.snapshot(),
@@ -509,7 +588,7 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
       if (!ok && failedNode) {
         const retryTarget = getRetryTarget(failedNode, graph);
         if (retryTarget) {
-          const targetNode = graph.nodes.find((n) => n.id === retryTarget);
+          const targetNode = nodeById.get(retryTarget);
           if (targetNode) {
             currentNode = targetNode;
             continue;
@@ -697,24 +776,6 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
       }
     }
 
-    // Save checkpoint
-    const checkpoint: Checkpoint = {
-      timestamp: new Date().toISOString(),
-      current_node: node.id,
-      completed_nodes: [...completedNodes],
-      node_retries: Object.fromEntries(nodeRetries),
-      context_values: context.snapshot(),
-      logs: [...context.logs],
-    };
-    await writeFile(join(logsRoot, "checkpoint.json"), JSON.stringify(checkpoint, null, 2), "utf-8");
-    emit(config, "checkpoint_saved", { node_id: node.id });
-
-    // Check for cancellation before scheduling next stage
-    {
-      const cr = await checkCancelled(node.id);
-      if (cr) return cr;
-    }
-
     // Select next edge (Section 3.3)
     // On failure, non-routing nodes should only continue if there's an
     // explicit failure-handling edge (condition match, or unconditional edge
@@ -732,7 +793,7 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
         // Check for retry_target (Section 3.7)
         const retryTarget = node.attrs.retry_target || node.attrs.fallback_retry_target;
         if (retryTarget) {
-          const targetNode = graph.nodes.find((n) => n.id === retryTarget);
+          const targetNode = nodeById.get(retryTarget);
           if (targetNode) {
             currentNode = targetNode;
             continue;
@@ -770,8 +831,8 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
       }
     }
 
-    // Advance
-    const nextNode = graph.nodes.find((n) => n.id === effectiveNextId);
+    // Resolve next node
+    const nextNode = nodeById.get(effectiveNextId);
     if (!nextNode) {
       emit(config, "pipeline_failed", { error: `Edge target "${effectiveNextId}" not found` });
       return cleanupOnFailure({
@@ -780,6 +841,26 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
       });
     }
 
+    // Save checkpoint with resolved next_node so resume skips re-execution
+    const checkpoint: Checkpoint = {
+      timestamp: new Date().toISOString(),
+      current_node: node.id,
+      next_node: nextNode.id,
+      completed_nodes: [...completedNodes],
+      node_retries: Object.fromEntries(nodeRetries),
+      context_values: context.snapshot(),
+      logs: [...context.logs],
+    };
+    await writeFile(join(logsRoot, "checkpoint.json"), JSON.stringify(checkpoint, null, 2), "utf-8");
+    emit(config, "checkpoint_saved", { node_id: node.id });
+
+    // Check for cancellation before advancing to next stage
+    {
+      const cr = await checkCancelled(node.id, nextNode.id);
+      if (cr) return cr;
+    }
+
+    // Advance
     currentNode = nextNode;
   }
 

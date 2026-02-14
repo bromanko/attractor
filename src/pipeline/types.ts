@@ -219,6 +219,13 @@ export type Checkpoint = {
   current_node: string;
   /** If set, resume execution at this node instead of current_node. */
   resume_at?: string;
+  /**
+   * The resolved next node after edge selection.  When present the engine
+   * resumes directly at this node (skipping re-execution of current_node).
+   * Absent when the pipeline was cancelled mid-stage before edge selection
+   * could run, in which case current_node is re-executed.
+   */
+  next_node?: string;
   completed_nodes: string[];
   node_retries: Record<string, number>;
   context_values: Record<string, unknown>;

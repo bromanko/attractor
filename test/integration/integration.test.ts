@@ -105,6 +105,23 @@ function promptCapture(): {
   };
 }
 
+/** Backend that records which nodes were executed, in order. */
+function trackingBackend(): {
+  executedNodes: string[];
+  backend: CodergenBackend;
+} {
+  const executedNodes: string[] = [];
+  return {
+    executedNodes,
+    backend: {
+      async run(node) {
+        executedNodes.push(node.id);
+        return `Done: ${node.id}`;
+      },
+    },
+  };
+}
+
 /** Collect pipeline events. */
 function eventCollector(): {
   events: PipelineEvent[];
@@ -582,6 +599,113 @@ describe("Checkpoint and resume", () => {
 
     expect(capturedGoal).toBe("Test checkpoint and resume");
   });
+
+  it("cancellation after edge selection saves next_node in checkpoint and resumes correctly", async () => {
+    const graph = await loadWorkflow("checkpoint-resume.awf.kdl");
+    const logs = await tempDir();
+    const ac = new AbortController();
+
+    // Abort when the checkpoint_saved event fires for node "b".
+    // At that point the engine has already completed edge selection and
+    // written the checkpoint with next_node populated. The subsequent
+    // checkCancelled call (with nextNodeId) detects the abort and saves
+    // the cancellation checkpoint — also with next_node.
+    const onEvent = (e: PipelineEvent) => {
+      if (e.kind === "checkpoint_saved" && e.data.node_id === "b") {
+        ac.abort();
+      }
+    };
+
+    const result = await runPipeline({
+      graph,
+      logsRoot: logs,
+      backend: successBackend,
+      abortSignal: ac.signal,
+      onEvent,
+    });
+
+    expect(result.status).toBe("cancelled");
+
+    // Verify the checkpoint file contains both current_node and next_node
+    const cp: Checkpoint = JSON.parse(
+      await readFile(join(logs, "checkpoint.json"), "utf-8"),
+    );
+    expect(cp.current_node).toBe("b");
+    expect(cp.next_node).toBe("c");
+    expect(cp.completed_nodes).toContain("a");
+    expect(cp.completed_nodes).toContain("b");
+
+    // Resume from the cancellation checkpoint — should start at next_node ("c"),
+    // NOT re-execute "b"
+    const logs2 = await tempDir();
+    const { executedNodes, backend: resumeBackend } = trackingBackend();
+
+    const resumed = await runPipeline({
+      graph,
+      logsRoot: logs2,
+      backend: resumeBackend,
+      checkpoint: cp,
+    });
+
+    expect(resumed.status).toBe("success");
+    // Only "c" and "d" should be executed, in order
+    expect(executedNodes).toEqual(["c", "d"]);
+  });
+
+  it("cancellation before edge selection saves checkpoint without next_node", async () => {
+    const graph = await loadWorkflow("checkpoint-resume.awf.kdl");
+    const logs = await tempDir();
+    const ac = new AbortController();
+    let nodeCount = 0;
+
+    // Abort during node "b"'s execution. The abort signal is detected
+    // at the post-execution cancellation check, which fires before edge
+    // selection — so checkCancelled is called without nextNodeId.
+    const backend: CodergenBackend = {
+      async run(node) {
+        nodeCount++;
+        if (nodeCount === 2) ac.abort(); // abort during "b"
+        return `Done: ${node.id}`;
+      },
+    };
+
+    const result = await runPipeline({
+      graph,
+      logsRoot: logs,
+      backend,
+      abortSignal: ac.signal,
+    });
+
+    expect(result.status).toBe("cancelled");
+
+    // Verify the checkpoint does NOT contain next_node — cancellation
+    // occurred before edge selection could resolve the next target.
+    const cp: Checkpoint = JSON.parse(
+      await readFile(join(logs, "checkpoint.json"), "utf-8"),
+    );
+    expect(cp.current_node).toBe("b");
+    expect(cp.next_node).toBeUndefined();
+    expect(cp.completed_nodes).toContain("a");
+    // "b" is NOT in completed_nodes because the cancellation check fires
+    // before completedNodes.push(node.id) in the engine loop.
+    expect(cp.completed_nodes).not.toContain("b");
+
+    // Resume from a checkpoint without next_node — the engine should
+    // fall back to re-executing current_node ("b").
+    const logs2 = await tempDir();
+    const { executedNodes, backend: resumeBackend } = trackingBackend();
+
+    const resumed = await runPipeline({
+      graph,
+      logsRoot: logs2,
+      backend: resumeBackend,
+      checkpoint: cp,
+    });
+
+    expect(resumed.status).toBe("success");
+    // "b" should be re-executed as the first node (fallback to current_node)
+    expect(executedNodes).toEqual(["b", "c", "d"]);
+  });
 });
 
 // ===========================================================================
@@ -815,6 +939,182 @@ describe("Event emission", () => {
     });
 
     expect(events.some((e) => e.kind === "pipeline_resumed")).toBe(true);
+  });
+
+  it("checkpoint includes next_node after edge selection", async () => {
+    const graph = await loadWorkflow("checkpoint-resume.awf.kdl");
+    const logs = await tempDir();
+    await runPipeline({ graph, logsRoot: logs, backend: successBackend });
+
+    const cp: Checkpoint = JSON.parse(
+      await readFile(join(logs, "checkpoint.json"), "utf-8"),
+    );
+
+    // The last checkpoint is saved after the last non-exit node ("d")
+    // completes, with next_node pointing to "exit".
+    expect(cp.current_node).toBe("d");
+    expect(cp.next_node).toBe("exit");
+  });
+
+  it("resumes at next_node without re-executing current_node", async () => {
+    const graph = await loadWorkflow("checkpoint-resume.awf.kdl");
+
+    // First run: complete all nodes
+    const logs1 = await tempDir();
+    await runPipeline({ graph, logsRoot: logs1, backend: successBackend });
+
+    const cp: Checkpoint = JSON.parse(
+      await readFile(join(logs1, "checkpoint.json"), "utf-8"),
+    );
+
+    // Simulate resuming from a checkpoint saved after "b" completed.
+    // Set current_node to "b" and next_node to "c" — "b" should NOT be
+    // re-executed; execution should start at "c".
+    cp.current_node = "b";
+    cp.next_node = "c";
+    cp.completed_nodes = ["a", "b"];
+
+    const { executedNodes, backend: resumeBackend } = trackingBackend();
+
+    const logs2 = await tempDir();
+    const result = await runPipeline({
+      graph,
+      logsRoot: logs2,
+      backend: resumeBackend,
+      checkpoint: cp,
+    });
+
+    expect(result.status).toBe("success");
+    // Only c and d should be executed, in order
+    expect(executedNodes).toEqual(["c", "d"]);
+    // completed_nodes should include all four plus exit
+    expect(result.completedNodes).toContain("a");
+    expect(result.completedNodes).toContain("b");
+    expect(result.completedNodes).toContain("c");
+    expect(result.completedNodes).toContain("d");
+  });
+
+  it("falls back to re-executing current_node when next_node is absent", async () => {
+    const graph = await loadWorkflow("checkpoint-resume.awf.kdl");
+
+    // Simulate an old-style checkpoint without next_node
+    const cp: Checkpoint = {
+      timestamp: new Date().toISOString(),
+      current_node: "c",
+      completed_nodes: ["a", "b", "c"],
+      node_retries: {},
+      context_values: { "graph.goal": "Test checkpoint and resume" },
+      logs: [],
+    };
+
+    const { executedNodes, backend: resumeBackend } = trackingBackend();
+
+    const logs = await tempDir();
+    const result = await runPipeline({
+      graph,
+      logsRoot: logs,
+      backend: resumeBackend,
+      checkpoint: cp,
+    });
+
+    expect(result.status).toBe("success");
+    // Without next_node, current_node ("c") should be re-executed as the
+    // *first* node — verifying fallback actually restarts at current_node.
+    expect(executedNodes).toEqual(["c", "d"]);
+  });
+
+  it("resume_at takes precedence over next_node", async () => {
+    const graph = await loadWorkflow("checkpoint-resume.awf.kdl");
+
+    // Checkpoint with all three fields set: resume_at should win over
+    // next_node and current_node per the engine's fallback chain
+    // (resume_at ?? next_node ?? current_node).
+    const cp: Checkpoint = {
+      timestamp: new Date().toISOString(),
+      current_node: "a",
+      next_node: "d",
+      resume_at: "b",
+      completed_nodes: ["a"],
+      node_retries: {},
+      context_values: { "graph.goal": "Test checkpoint and resume" },
+      logs: [],
+    };
+
+    const { executedNodes, backend: resumeBackend } = trackingBackend();
+
+    const logs = await tempDir();
+    const result = await runPipeline({
+      graph,
+      logsRoot: logs,
+      backend: resumeBackend,
+      checkpoint: cp,
+    });
+
+    expect(result.status).toBe("success");
+    // resume_at = "b" should win: b, c, d executed; a skipped
+    // resume_at = "b" should win: b, c, d executed in order; a skipped
+    expect(executedNodes).toEqual(["b", "c", "d"]);
+  });
+
+  it("fails with clear error when next_node references a removed graph node", async () => {
+    const graph = await loadWorkflow("checkpoint-resume.awf.kdl");
+
+    // Simulate a checkpoint saved before a graph modification removed the target node
+    const cp: Checkpoint = {
+      timestamp: new Date().toISOString(),
+      current_node: "b",
+      next_node: "removed_node",
+      completed_nodes: ["a", "b"],
+      node_retries: {},
+      context_values: { "graph.goal": "Test checkpoint and resume" },
+      logs: [],
+    };
+
+    const logs = await tempDir();
+    const { events, onEvent } = eventCollector();
+    const result = await runPipeline({
+      graph,
+      logsRoot: logs,
+      backend: successBackend,
+      checkpoint: cp,
+      onEvent,
+    });
+
+    expect(result.status).toBe("fail");
+    expect(result.lastOutcome?.failure_reason).toContain("removed_node");
+    expect(result.lastOutcome?.failure_reason).toContain("next_node");
+    expect(result.lastOutcome?.failure_reason).toContain("does not exist");
+
+    const failEvent = events.find((e) => e.kind === "pipeline_failed");
+    expect(failEvent).toBeDefined();
+    expect(failEvent!.data.error).toContain("removed_node");
+  });
+
+  it("fails with clear error when resume_at references a removed graph node", async () => {
+    const graph = await loadWorkflow("checkpoint-resume.awf.kdl");
+
+    const cp: Checkpoint = {
+      timestamp: new Date().toISOString(),
+      current_node: "a",
+      next_node: "c",
+      resume_at: "nonexistent",
+      completed_nodes: ["a"],
+      node_retries: {},
+      context_values: { "graph.goal": "Test checkpoint and resume" },
+      logs: [],
+    };
+
+    const logs = await tempDir();
+    const result = await runPipeline({
+      graph,
+      logsRoot: logs,
+      backend: successBackend,
+      checkpoint: cp,
+    });
+
+    expect(result.status).toBe("fail");
+    expect(result.lastOutcome?.failure_reason).toContain("nonexistent");
+    expect(result.lastOutcome?.failure_reason).toContain("resume_at");
   });
 });
 

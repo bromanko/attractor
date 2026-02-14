@@ -4,7 +4,7 @@
 
 - [ ] **Graph composition** — Support including/embedding graphs from other `.dot` files. Enable reusable sub-pipelines (e.g. a shared review pipeline included by multiple feature workflows). Syntax TBD — could be `subgraph` with a `file` attribute or a custom `include` directive.
 - [ ] **Workflow search path** — Resolve workflow names from well-known directories so `attractor run my-pipeline` finds `.attractor/workflows/my-pipeline.dot` (repo-local) or `~/.config/attractor/workflows/my-pipeline.dot` (user-global).
-- [ ] **Checkpoint resume routing correctness** — On resume, continue from the exact previously selected next node/edge, not just the first outgoing edge from `checkpoint.current_node`. Persist selected edge/next node in `checkpoint.json` and use it during recovery.
+- [x] **Checkpoint resume routing correctness** — On resume, continue from the exact previously selected next node/edge, not just the first outgoing edge from `checkpoint.current_node`. Persist selected edge/next node in `checkpoint.json` and use it during recovery.
 - [x] **CLI resume entrypoint** — `attractor run <pipeline.dot> --resume` loads `<logs>/checkpoint.json`, recovers workspace (including tip commit), and resumes execution.
 
 ## CLI Output & UX
