@@ -64,7 +64,11 @@ If the change is isolated and full tests are expensive, run the most relevant te
 - Prefer discriminated unions and narrow types for state/result modeling.
 - **Use narrow string-literal unions instead of `string` when the set of valid values is known.** For example, a field that accepts a boolean or its DOT-string representation should be typed `boolean | "true" | "false"`, not `boolean | string`. Overly broad types mask configuration errors at compile time.
 - **Use named constants for cross-module context/config keys.** Never scatter magic string literals across files. See `HUMAN_GATE_KEYS` in `src/pipeline/types.ts` as the pattern — define a `const` object in a shared location and import it everywhere the keys are read or written.
-- Keep error handling explicit; return structured error data where appropriate. **Never use bare `catch {}` or `catch { /* ignore */ }` to swallow errors silently.** At minimum log a warning. Better yet, avoid the need — e.g., store structured values in `Context` natively (using `get`/`set` with typed accessors like `getStringArray`) instead of serializing to JSON strings and parsing them back.
+- Keep error handling explicit; return structured error data where appropriate. **Never use bare `catch {}` or `catch { /* ignore */ }` to swallow errors silently.**
+  - Every `catch` must bind an error variable (`catch (err)`) unless the language prevents it. Use `catch (_err)` if the variable is intentionally unused.
+  - Best-effort catches must emit a warning with stage/module context (e.g., `console.warn(\`[module] context: \${err}\`)`).
+  - Do not introduce new silent catches in engine/handler/backend code paths.
+  - Better yet, avoid the need — e.g., store structured values in `Context` natively (using `get`/`set` with typed accessors like `getStringArray`) instead of serializing to JSON strings and parsing them back.
 - Add or update tests in `test/` when behavior changes.
 
 ## When editing architecture-critical areas
