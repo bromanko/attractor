@@ -25,14 +25,8 @@ type KdlNode = {
   children: KdlNode[];
 };
 
-function stripComments(source: string): string {
-  return source
-    .replace(/\/\/.*$/gm, "")
-    .replace(/\/\*[\s\S]*?\*\//g, "");
-}
-
 function tokenize(source: string): Token[] {
-  const text = stripComments(source);
+  const text = source;
   const tokens: Token[] = [];
 
   let i = 0;
@@ -54,6 +48,29 @@ function tokenize(source: string): Token[] {
 
   while (i < text.length) {
     const ch = peek();
+
+    // Line comments: // until end of line
+    if (ch === "/" && at(1) === "/") {
+      while (i < text.length && peek() !== "\n") advance();
+      continue;
+    }
+
+    // Block comments: /* ... */
+    if (ch === "/" && at(1) === "*") {
+      const startLine = line;
+      const startCol = col;
+      advance(); // /
+      advance(); // *
+      while (i < text.length) {
+        if (peek() === "*" && at(1) === "/") {
+          advance(); // *
+          advance(); // /
+          break;
+        }
+        advance();
+      }
+      continue;
+    }
     if (ch === " " || ch === "\t" || ch === "\r") {
       advance();
       continue;
