@@ -1,6 +1,6 @@
-workflow "FeatureDev" {
+workflow "Feature Dev" {
   version 2
-  goal "(specify with --goal)"
+  description "Full feature development with planning, review, and implementation"
   start "ws_create"
 
   stage "ws_create" kind="workspace.create" workspace_name="feature-dev"

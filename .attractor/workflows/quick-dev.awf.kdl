@@ -1,6 +1,6 @@
-workflow "QuickDev" {
+workflow "Quick Dev" {
   version 2
-  goal "(specify with --goal)"
+  description "Fast development cycle without human review gates"
   start "plan"
 
   stage "plan" kind="llm" model="gpt-5.3-codex" provider="openai-codex" prompt="You are working on an existing TypeScript project.\nRead the project structure, README, existing code, and tests to understand the codebase thoroughly.\n\nThen create a detailed implementation plan for the goal.\n\nGoal: $goal\n\nYour plan should include:\n1. Summary\n2. Files to change\n3. Approach\n4. Edge cases\n5. Test cases\n6. Open questions\n\nOutput a concise structured plan. Do NOT write the plan to a file — keep it in your response only."

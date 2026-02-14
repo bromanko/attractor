@@ -1,6 +1,6 @@
 workflow "Planning" {
   version 2
-  goal "(specify with --goal)"
+  description "Create a detailed implementation plan for a feature or change"
   start "ws_create"
 
   stage "ws_create" kind="workspace.create" workspace_name="planning"

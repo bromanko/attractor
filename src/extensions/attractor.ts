@@ -156,17 +156,17 @@ async function pickWorkflow(
     return undefined;
   }
 
-  const options = entries.map((e) => ({
-    value: e.name,
-    label: e.description
+  const options = entries.map((e) =>
+    e.description
       ? `${e.name} — ${e.description} (${e.stageCount} stages)`
       : `${e.name} (${e.stageCount} stages)`,
-  }));
+  );
 
   const selected = await ctx.ui.select("Select a workflow", options);
   if (selected === undefined) return undefined;
 
-  return entries.find((e) => e.name === selected);
+  const selectedIndex = options.indexOf(selected);
+  return selectedIndex >= 0 ? entries[selectedIndex] : undefined;
 }
 
 async function promptGoal(
@@ -333,15 +333,13 @@ async function handleRun(
   const parsed = parseWorkflow(workflowPath, source);
   const graph = parsed.graph;
 
-  // Goal handling: prompt for goal on non-resume runs
+  // Goal handling: always prompt for goal on fresh (non-resume) runs.
+  // Since --goal was removed, the user must provide one interactively.
   if (!cmd.resume) {
-    // If workflow has no goal, prompt for one
-    if (!parsed.workflow.goal) {
-      const goal = await promptGoal(ctx);
-      if (goal === undefined) return; // cancelled
-      graph.attrs.goal = goal;
-      parsed.workflow.goal = goal;
-    }
+    const goal = await promptGoal(ctx);
+    if (goal === undefined) return; // cancelled
+    graph.attrs.goal = goal;
+    parsed.workflow.goal = goal;
   }
 
   // Show workflow preview

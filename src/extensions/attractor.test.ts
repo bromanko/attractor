@@ -398,6 +398,7 @@ describe("attractor extension", () => {
       const pi = makePi();
       attractorExtension(pi);
       const ctx = makeCtx(tempDir) as any;
+      (ctx.ui.input as any).mockResolvedValueOnce("test goal");
       const handler = registeredCommands.get("attractor")!.handler;
       await handler(`run ${dotFile}`, ctx);
 
@@ -411,6 +412,7 @@ describe("attractor extension", () => {
       const pi = makePi();
       attractorExtension(pi);
       const ctx = makeCtx(tempDir);
+      (ctx.ui.input as any).mockResolvedValueOnce("test goal");
       const handler = registeredCommands.get("attractor")!.handler;
       await handler(`run ${dotFile} --dry-run`, ctx);
       expect(ctx.ui.notify).toHaveBeenCalledWith(
@@ -435,6 +437,7 @@ describe("attractor extension", () => {
       const pi = makePi();
       attractorExtension(pi);
       const ctx = makeCtx(tempDir) as any;
+      (ctx.ui.input as any).mockResolvedValueOnce("test goal");
       const handler = registeredCommands.get("attractor")!.handler;
       await handler(`run ${dotFile}`, ctx);
 
@@ -443,16 +446,7 @@ describe("attractor extension", () => {
       expect(previewCall).toBeDefined();
     });
 
-    it("prompts for goal when workflow has no goal", async () => {
-      // Override parseWorkflowKdl to return a workflow without goal
-      parseWorkflowKdlImpl = () => ({
-        version: 2,
-        name: "wf",
-        start: "start",
-        stages: [{ id: "exit", kind: "exit" }],
-        // no goal
-      });
-
+    it("always prompts for goal on fresh (non-resume) runs", async () => {
       const pi = makePi();
       attractorExtension(pi);
       const ctx = makeCtx(tempDir);
@@ -464,13 +458,6 @@ describe("attractor extension", () => {
     });
 
     it("cancels when goal prompt is cancelled", async () => {
-      parseWorkflowKdlImpl = () => ({
-        version: 2,
-        name: "wf",
-        start: "start",
-        stages: [{ id: "exit", kind: "exit" }],
-      });
-
       const { runPipeline } = await import("../pipeline/index.js");
       (runPipeline as any).mockClear();
       const pi = makePi();
@@ -507,8 +494,10 @@ describe("attractor extension", () => {
       const pi = makePi();
       attractorExtension(pi);
       const ctx = makeCtx(tempDir);
-      // Mock parser returns name "wf", so select that
-      (ctx.ui.select as any).mockResolvedValueOnce("wf");
+      // Mock parser returns name "wf", so select the formatted option
+      (ctx.ui.select as any).mockResolvedValueOnce("wf (1 stages)");
+      // Goal prompt follows workflow selection
+      (ctx.ui.input as any).mockResolvedValueOnce("my goal");
       const handler = registeredCommands.get("attractor")!.handler;
       await handler("run", ctx);
 
@@ -516,6 +505,7 @@ describe("attractor extension", () => {
         "Select a workflow",
         expect.any(Array),
       );
+      expect(ctx.ui.input).toHaveBeenCalledWith("Enter the pipeline goal");
     });
 
     it("picker cancel exits without side effects", async () => {
@@ -545,8 +535,8 @@ describe("attractor extension", () => {
       const pi = makePi();
       attractorExtension(pi);
       const ctx = makeCtx(tempDir);
-      // Mock returns name "wf" for all parses, so select that
-      (ctx.ui.select as any).mockResolvedValueOnce("wf");
+      // Mock returns name "wf" for all parses, so select the formatted option
+      (ctx.ui.select as any).mockResolvedValueOnce("wf (1 stages)");
       const handler = registeredCommands.get("attractor")!.handler;
       await handler("validate", ctx);
 

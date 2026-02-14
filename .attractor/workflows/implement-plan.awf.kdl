@@ -1,6 +1,6 @@
-workflow "ImplementPlan" {
+workflow "Implement Plan" {
   version 2
-  goal "(specify with --goal)"
+  description "Implement an existing plan with code reviews and CI checks"
   start "ws_create"
 
   stage "ws_create" kind="workspace.create" workspace_name="implement-plan"
