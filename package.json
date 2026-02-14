@@ -15,9 +15,7 @@
     "attractor": "dist/cli.js"
   },
   "scripts": {
-    "prebuild": "npm run clean",
     "build": "tsc",
-    "prepack": "npm run build && npm run lint && npm test",
     "test": "node --experimental-vm-modules node_modules/.bin/vitest run",
     "test:integration": "node --experimental-vm-modules node_modules/.bin/vitest run test/integration",
     "test:watch": "node --experimental-vm-modules node_modules/.bin/vitest",

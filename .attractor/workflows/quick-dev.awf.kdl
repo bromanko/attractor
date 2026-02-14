@@ -22,10 +22,10 @@ workflow "QuickDev" {
 
   stage "selfci" kind="tool" command="nix develop -c selfci"
 
-  stage "review_code" kind="llm" model="gpt-5.3-codex" provider="openai-codex" auto_status=true prompt_file=".pi/skills/attractor-typescript-code-review/SKILL.md" prompt="Review changed files for code quality. [STATUS: fail] if blocking issues else [STATUS: success]."
-  stage "review_security" kind="llm" model="gpt-5.3-codex" provider="openai-codex" auto_status=true prompt_file=".pi/skills/attractor-typescript-security-review/SKILL.md" prompt="Review changed files for security. [STATUS: fail] if blocking issues else [STATUS: success]."
-  stage "review_perf" kind="llm" model="gpt-5.3-codex" provider="openai-codex" auto_status=true prompt_file=".pi/skills/attractor-typescript-performance-review/SKILL.md" prompt="Review changed files for performance. [STATUS: fail] if blocking issues else [STATUS: success]."
-  stage "review_tests" kind="llm" model="gpt-5.3-codex" provider="openai-codex" auto_status=true prompt_file=".pi/skills/attractor-typescript-test-review/SKILL.md" prompt="Review changed tests coverage. [STATUS: fail] if critical gaps else [STATUS: success]."
+  stage "review_code" kind="llm" model="gpt-5.3-codex" provider="openai-codex" auto_status=true prompt_file=".pi/skills/attractor-typescript-code-review/SKILL.md"
+  stage "review_security" kind="llm" model="gpt-5.3-codex" provider="openai-codex" auto_status=true prompt_file=".pi/skills/attractor-typescript-security-review/SKILL.md"
+  stage "review_perf" kind="llm" model="gpt-5.3-codex" provider="openai-codex" auto_status=true prompt_file=".pi/skills/attractor-typescript-performance-review/SKILL.md"
+  stage "review_tests" kind="llm" model="gpt-5.3-codex" provider="openai-codex" auto_status=true prompt_file=".pi/skills/attractor-typescript-test-review/SKILL.md"
 
   stage "gate" kind="decision" {
     route when="outcome(\"selfci\") != \"success\" || outcome(\"review_code\") != \"success\" || outcome(\"review_security\") != \"success\" || outcome(\"review_perf\") != \"success\" || outcome(\"review_tests\") != \"success\"" to="fix"
@@ -52,5 +52,4 @@ workflow "QuickDev" {
   transition from="review_perf" to="gate" when="outcome(\"review_perf\") != \"success\""
   transition from="review_tests" to="gate"
   transition from="fix" to="selfci"
-  transition from="gate" to="exit"
 }
