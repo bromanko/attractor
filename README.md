@@ -10,18 +10,19 @@ Built from the [StrongDM Software Factory](https://factory.strongdm.ai/) NLSpecs
 
 ## Architecture
 
-Three layers, built bottom-up:
-
 ```
 ┌─────────────────────────────────────────┐
-│  Attractor Pipeline Engine              │  KDL parser, execution engine,
-│  (src/pipeline/)                        │  handlers, conditions, stylesheet
+│  CLI                                    │  Standalone CLI entry point
+│  (src/cli.ts)                           │  (run, validate, show)
 ├─────────────────────────────────────────┤
-│  Coding Agent Loop                      │  Session, provider profiles,
-│  (src/agent/)                           │  tool execution, truncation
+│  Pi Extension                           │  /attractor slash command,
+│  (src/extensions/)                      │  TUI panel, interactive interviewer
 ├─────────────────────────────────────────┤
-│  Unified LLM Client                     │  Client, providers, retry,
-│  (src/llm/)                             │  error hierarchy, model catalog
+│  PiBackend                              │  CodergenBackend powered by pi SDK
+│  (src/pi-backend.ts)                    │  (AgentSession, tool modes, usage)
+├─────────────────────────────────────────┤
+│  Pipeline Engine                        │  KDL parser, execution engine,
+│  (src/pipeline/)                        │  handlers, conditions, validators
 └─────────────────────────────────────────┘
 ```
 
@@ -136,58 +137,16 @@ Execution state saved after each node. Resume from any checkpoint.
 
 Built-in interviewers: `AutoApproveInterviewer`, `QueueInterviewer`, `CallbackInterviewer`, `RecordingInterviewer`.
 
-## Unified LLM Client
-
-```ts
-import { Client, generate } from "attractor/llm";
-
-const client = new Client({
-  providers: { anthropic: myAnthropicAdapter },
-});
-
-const result = await generate({
-  model: "claude-opus-4-6",
-  prompt: "Explain quantum computing",
-  client,
-});
-```
-
-Features: provider routing, middleware, retry with backoff, error hierarchy, model catalog, tool execution loop.
-
-## Coding Agent Loop
-
-```ts
-import { Session, LocalExecutionEnvironment, CORE_TOOLS } from "attractor/agent";
-
-const session = new Session({
-  profile: myProviderProfile,
-  env: new LocalExecutionEnvironment("/path/to/project"),
-  client: myLlmClient,
-});
-
-session.onEvent((event) => console.log(event.kind));
-await session.submit("Fix the login bug");
-```
-
-Features: provider-aligned toolsets, tool output truncation (char + line), steering/follow-up, loop detection, subagent support.
-
 ## Project Structure
 
 ```
 src/
-├── llm/                    Unified LLM Client
-│   ├── types.ts            Core types, error hierarchy
-│   ├── client.ts           Client, generate(), middleware
-│   ├── retry.ts            Exponential backoff with jitter
-│   ├── errors.ts           HTTP status → error mapping
-│   └── catalog.ts          Model catalog
-├── agent/                  Coding Agent Loop
-│   ├── types.ts            Session types, execution environment
-│   ├── session.ts          Core agentic loop
-│   ├── tools.ts            Shared tools (read, write, edit, shell, grep, glob)
-│   ├── truncation.ts       Output truncation (char + line)
-│   └── local-env.ts        Local execution environment
-├── pipeline/               Attractor Pipeline Engine
+├── cli.ts                  Standalone CLI entry point
+├── cli-renderer.ts         CLI output rendering
+├── pi-backend.ts           CodergenBackend powered by pi SDK
+├── interactive-interviewer.ts  Interactive human gate prompts
+├── index.ts                Public API re-exports
+├── pipeline/               Pipeline Engine
 │   ├── types.ts            Graph model, context, handlers, interviewers
 │   ├── workflow-types.ts   KDL workflow definition types
 │   ├── workflow-kdl-parser.ts  KDL workflow parser
@@ -202,7 +161,6 @@ src/
 │   ├── workspace.ts        Jujutsu workspace handlers
 │   ├── tool-failure.ts     Structured tool failure details
 │   ├── status-markers.ts   Stage status file utilities
-│   ├── llm-backend.ts      LLM backend integration
 │   └── graph-to-dot.ts     Graph → DOT export
 └── extensions/             Pi extension integration
     ├── attractor.ts        Main extension entry point

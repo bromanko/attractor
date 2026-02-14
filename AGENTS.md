@@ -9,9 +9,10 @@ Guidance for coding agents working in this repository.
 - **Runtime:** Node.js >= 20
 - **Build output:** `dist/`
 - **Main areas:**
-  - `src/llm/` — unified LLM client
-  - `src/agent/` — coding-agent loop
-  - `src/pipeline/` — DOT pipeline engine
+  - `src/pipeline/` — KDL workflow parser, execution engine, handlers, conditions, validators
+  - `src/pi-backend.ts` — CodergenBackend powered by pi SDK (AgentSession)
+  - `src/extensions/` — Pi extension integration (`/attractor` slash command, TUI panel)
+  - `src/cli.ts` — Standalone CLI entry point
 
 ## Environment
 
