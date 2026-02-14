@@ -26,6 +26,29 @@ function job_build() {
   npm run build
 }
 
+function job_validate_workflows() {
+  selfci step start "tsc (for validate)"
+  if ! npm run build; then
+    selfci step fail
+  fi
+
+  selfci step start "validate workflows"
+  local failed=0
+  for f in .attractor/workflows/*.awf.kdl examples/*.awf.kdl; do
+    if [ ! -f "$f" ]; then
+      continue
+    fi
+    echo "  validating $f"
+    if ! node dist/cli.js validate "$f"; then
+      failed=1
+    fi
+  done
+
+  if [ "$failed" -ne 0 ]; then
+    selfci step fail
+  fi
+}
+
 function job_nix_build() {
   selfci step start "nix build"
   nix build
@@ -61,11 +84,13 @@ case "$SELFCI_JOB_NAME" in
     selfci job start "lint"
     selfci job start "test"
     selfci job start "build"
+    selfci job start "validate-workflows"
     selfci job start "nix-build"
 
     selfci job wait "lint"
     selfci job wait "test"
     selfci job wait "build"
+    selfci job wait "validate-workflows"
     selfci job wait "nix-build"
     ;;
 
@@ -79,6 +104,10 @@ case "$SELFCI_JOB_NAME" in
 
   build)
     nix develop -c bash -c "set -euo pipefail; $(declare -f ensure_deps); $(declare -f job_build); ensure_deps; job_build"
+    ;;
+
+  validate-workflows)
+    nix develop -c bash -c "set -euo pipefail; $(declare -f ensure_deps); $(declare -f job_validate_workflows); ensure_deps; job_validate_workflows"
     ;;
 
   nix-build)
