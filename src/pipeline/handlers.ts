@@ -318,9 +318,10 @@ export class WaitForHumanHandler implements Handler {
           stage: node.id,
         });
         feedback = feedbackAnswer.text ?? String(feedbackAnswer.value ?? "").trim();
-      } catch {
+      } catch (err) {
         // Best effort: keep revision flow working even if a non-interactive
         // interviewer implementation does not handle freeform prompts.
+        console.warn(`[handlers] failed to collect revision feedback for stage "${node.id}": ${err}`);
       }
     }
 
@@ -462,8 +463,9 @@ export class ToolHandler implements Handler {
               attempt: attemptNum,
               timestamp: new Date().toISOString(),
             }, null, 2), "utf-8");
-          } catch {
+          } catch (err) {
             // Best effort — don't fail the handler if artifact writing fails
+            console.warn(`[handlers] failed to write tool artifacts for stage "${node.id}": ${err}`);
           }
         }
 

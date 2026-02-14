@@ -288,8 +288,9 @@ export class PiBackend implements CodergenBackend {
       try {
         const { getModel } = await import("@mariozechner/pi-ai");
         model = getModel(provider as any, modelId as any);
-      } catch {
-        // getModel only works for built-in typed models
+      } catch (err) {
+        // getModel only works for built-in typed models; fall through to model-not-found error
+        console.warn(`[PiBackend] getModel fallback failed for ${provider}/${modelId}: ${err}`);
       }
     }
 
@@ -394,8 +395,9 @@ export class PiBackend implements CodergenBackend {
         abortHandler = () => {
           try {
             session?.dispose();
-          } catch {
+          } catch (err) {
             // Best effort — dispose may already have been called
+            console.warn(`[PiBackend] dispose on abort failed: ${err}`);
           }
         };
         signal.addEventListener("abort", abortHandler, { once: true });
@@ -470,7 +472,10 @@ export class PiBackend implements CodergenBackend {
       };
     } finally {
       // Idempotent dispose — may already have been called by abort handler
-      try { session?.dispose(); } catch { /* ignore */ }
+      try { session?.dispose(); } catch (err) {
+        // Idempotent dispose — may already have been called by abort handler
+        console.warn(`[PiBackend] dispose in finally failed: ${err}`);
+      }
     }
   }
 }

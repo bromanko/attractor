@@ -53,7 +53,8 @@ export function renderMarkdown(text: string): string {
       return rendered.replace(/\n{3,}/g, "\n\n").trimEnd();
     }
     return text;
-  } catch {
+  } catch (_err) {
+    // Markdown rendering failed — return raw text as fallback
     return text;
   }
 }

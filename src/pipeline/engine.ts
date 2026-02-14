@@ -466,7 +466,10 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
         };
 
         // Forget the old workspace registration if it still exists in jj
-        try { await quietExec(["workspace", "forget", wsName]); } catch { /* ignore */ }
+        try { await quietExec(["workspace", "forget", wsName]); } catch (err) {
+          // Best effort: workspace may not be registered; safe to ignore
+          emit(config, "stage_completed", { name: `ws_forget_skip(${wsName})`, notes: String(err) });
+        }
 
         await quietExec(["workspace", "add", "--name", wsName, wsPath]);
 
@@ -659,8 +662,9 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
         emit(config, "stage_retrying", { name: node.id, attempt, delay: delay1 });
         try {
           await sleep(delay1, abortSignal);
-        } catch {
-          // Abort during backoff — exit immediately
+        } catch (err) {
+          // Abort during backoff — exit immediately (AbortError expected)
+          console.warn(`[engine] backoff interrupted for ${node.id}: ${err}`);
           const cr = await checkCancelled(node.id);
           if (cr) return cr;
         }
@@ -675,8 +679,9 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
           emit(config, "stage_retrying", { name: node.id, attempt, delay: delay2 });
           try {
             await sleep(delay2, abortSignal);
-          } catch {
-            // Abort during backoff — exit immediately
+          } catch (err) {
+            // Abort during backoff — exit immediately (AbortError expected)
+            console.warn(`[engine] backoff interrupted for ${node.id}: ${err}`);
             const cr = await checkCancelled(node.id);
             if (cr) return cr;
           }
@@ -771,8 +776,9 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
         });
         const tip = await tipJj(["log", "-r", "@", "--no-graph", "-T", "commit_id.short(8)", "--limit", "1"]);
         context.set("workspace.tip_commit", tip);
-      } catch {
+      } catch (err) {
         // Non-fatal — just means we can't restore the exact commit on resume
+        console.warn(`[engine] failed to capture workspace tip commit: ${err}`);
       }
     }
 

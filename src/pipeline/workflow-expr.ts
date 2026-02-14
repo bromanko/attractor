@@ -550,7 +550,8 @@ export function isPlausibleExpression(expr: string): boolean {
   try {
     parseExpression(trimmed);
     return true;
-  } catch {
+  } catch (_err) {
+    // Expression failed to parse — not a valid expression
     return false;
   }
 }

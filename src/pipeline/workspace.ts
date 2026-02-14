@@ -53,7 +53,8 @@ async function readRegistry(repoRoot: string): Promise<WorkspaceRegistry> {
   try {
     const raw = await readFile(registryPath, "utf-8");
     return JSON.parse(raw) as WorkspaceRegistry;
-  } catch {
+  } catch (_err) {
+    // Registry file may not exist yet — return empty registry
     return { workspaces: {} };
   }
 }
@@ -311,7 +312,9 @@ export class WorkspaceMergeHandler implements Handler {
         ],
         repoRoot,
       );
-    } catch {
+    } catch (err) {
+      // Best effort: workspace may have no mutable ancestors; treat as empty
+      console.warn(`[workspace] failed to list workspace commits: ${err}`);
       commitsRaw = "";
     }
 
@@ -493,8 +496,9 @@ export class WorkspaceCleanupHandler implements Handler {
     // Forget workspace in jj
     try {
       await jj(["workspace", "forget", wsName], repoRoot || undefined);
-    } catch {
-      // Already forgotten or doesn't exist — that's fine.
+    } catch (err) {
+      // Already forgotten or doesn't exist — that's fine
+      console.warn(`[workspace] forget during cleanup skipped: ${err}`);
     }
 
     // Remove directory with safety checks
@@ -503,8 +507,9 @@ export class WorkspaceCleanupHandler implements Handler {
       if (!repoRoot || !repoRoot.startsWith(wsPath)) {
         try {
           await rm(wsPath, { recursive: true, force: true });
-        } catch {
-          // Directory may already be gone.
+        } catch (err) {
+          // Directory may already be gone
+          console.warn(`[workspace] rm during cleanup skipped: ${err}`);
         }
       }
     }
@@ -553,23 +558,26 @@ export async function emergencyWorkspaceCleanup(
 
   try {
     await runner(["workspace", "forget", wsName], repoRoot || undefined);
-  } catch {
-    // Best effort.
+  } catch (err) {
+    // Best effort — emergency cleanup; log and continue
+    console.warn(`[workspace] emergency forget failed: ${err}`);
   }
 
   if (wsPath && wsPath.includes("-ws-") && (!repoRoot || !repoRoot.startsWith(wsPath))) {
     try {
       await rm(wsPath, { recursive: true, force: true });
-    } catch {
-      // Best effort.
+    } catch (err) {
+      // Best effort — emergency cleanup; log and continue
+      console.warn(`[workspace] emergency rm failed: ${err}`);
     }
   }
 
   if (repoRoot) {
     try {
       await removeFromRegistry(repoRoot, wsName);
-    } catch {
-      // Best effort.
+    } catch (err) {
+      // Best effort — emergency cleanup; log and continue
+      console.warn(`[workspace] emergency registry cleanup failed: ${err}`);
     }
   }
 }
