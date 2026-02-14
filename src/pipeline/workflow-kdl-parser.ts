@@ -264,6 +264,14 @@ function scalarInt(node: KdlNode, index: number, fieldName: string): number {
   return value;
 }
 
+function scalarBoolean(node: KdlNode, index: number, fieldName: string): boolean {
+  const value = node.args[index];
+  if (typeof value !== "boolean") {
+    throw new Error(`KDL conversion error: node "${node.name}" requires boolean arg ${index} for ${fieldName}, got ${typeof value} (${JSON.stringify(value)})`);
+  }
+  return value;
+}
+
 function propString(node: KdlNode, key: string): string | undefined {
   const val = node.props[key];
   return typeof val === "string" ? val : undefined;
@@ -416,7 +424,7 @@ function parseStage(stageNode: KdlNode): WorkflowStage {
       options: parseHumanOptions(stageNode),
       require_feedback_on: requireFeedback.length > 0 ? requireFeedback : undefined,
       details_from: detailsFromNode ? scalarString(detailsFromNode, 0, "details_from") : undefined,
-      re_review: reReviewNode ? Boolean(reReviewNode.args[0]) : propBoolean(stageNode, "re_review"),
+      re_review: reReviewNode ? scalarBoolean(reReviewNode, 0, "re_review") : propBoolean(stageNode, "re_review"),
       retry,
       model_profile,
     };

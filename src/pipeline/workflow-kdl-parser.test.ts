@@ -93,6 +93,64 @@ describe("parseWorkflowKdl", () => {
     expect(wf.stages).toHaveLength(2);
   });
 
+  it("parses re_review true as boolean true", () => {
+    const wf = parseWorkflowKdl(`
+      workflow "rr-test" {
+        version 2
+        start "review"
+
+        stage "review" kind="human" {
+          prompt "Review it"
+          re_review true
+          option "approve" to="exit"
+        }
+
+        stage "exit" kind="exit"
+      }
+    `);
+
+    const review = wf.stages.find((s) => s.id === "review");
+    expect(review?.kind).toBe("human");
+    expect((review as any).re_review).toBe(true);
+  });
+
+  it("parses re_review false as boolean false", () => {
+    const wf = parseWorkflowKdl(`
+      workflow "rr-test" {
+        version 2
+        start "review"
+
+        stage "review" kind="human" {
+          prompt "Review it"
+          re_review false
+          option "approve" to="exit"
+        }
+
+        stage "exit" kind="exit"
+      }
+    `);
+
+    const review = wf.stages.find((s) => s.id === "review");
+    expect((review as any).re_review).toBe(false);
+  });
+
+  it("rejects re_review with string arg", () => {
+    expect(() => parseWorkflowKdl(`
+      workflow "rr-test" {
+        version 2
+        start "review"
+
+        stage "review" kind="human" {
+          prompt "Review it"
+          re_review "false"
+          option "approve" to="exit"
+        }
+
+        stage "exit" kind="exit"
+      }
+    `)).toThrow(/requires boolean arg/);
+  });
+
   it("parses human options and decision routes", () => {
     const wf = parseWorkflowKdl(`
       workflow "demo" {
