@@ -9,10 +9,10 @@ workflow "ImplementPlan" {
 
   stage "selfci" kind="tool" command="CANDIDATE=$(jj log -r 'latest(heads(::@ ~ empty()))' --no-graph -T 'commit_id.short()' --limit 1) && nix develop -c selfci check --candidate $CANDIDATE"
 
-  stage "review_code" kind="llm" model="claude-opus-4-6" provider="anthropic" auto_status=true prompt_file=".pi/skills/attractor-typescript-code-review/SKILL.md" prompt="Review changed files for code quality. [STATUS: fail] if blocking issues else [STATUS: success]."
-  stage "review_security" kind="llm" model="claude-opus-4-6" provider="anthropic" auto_status=true prompt_file=".pi/skills/attractor-typescript-security-review/SKILL.md" prompt="Review changed files for security. [STATUS: fail] if blocking issues else [STATUS: success]."
-  stage "review_perf" kind="llm" model="claude-opus-4-6" provider="anthropic" auto_status=true prompt_file=".pi/skills/attractor-typescript-performance-review/SKILL.md" prompt="Review changed files for performance. [STATUS: fail] if blocking issues else [STATUS: success]."
-  stage "review_tests" kind="llm" model="claude-opus-4-6" provider="anthropic" auto_status=true prompt_file=".pi/skills/attractor-typescript-test-review/SKILL.md" prompt="Review changed tests coverage. [STATUS: fail] if critical gaps else [STATUS: success]."
+  stage "review_code" kind="llm" model="claude-opus-4-6" provider="anthropic" auto_status=true prompt="Read .pi/skills/attractor-typescript-code-review/SKILL.md and review changed files for code quality. [STATUS: fail] if blocking issues else [STATUS: success]."
+  stage "review_security" kind="llm" model="claude-opus-4-6" provider="anthropic" auto_status=true prompt="Read .pi/skills/attractor-typescript-security-review/SKILL.md and review changed files for security. [STATUS: fail] if blocking issues else [STATUS: success]."
+  stage "review_perf" kind="llm" model="claude-opus-4-6" provider="anthropic" auto_status=true prompt="Read .pi/skills/attractor-typescript-performance-review/SKILL.md and review changed files for performance. [STATUS: fail] if blocking issues else [STATUS: success]."
+  stage "review_tests" kind="llm" model="claude-opus-4-6" provider="anthropic" auto_status=true prompt="Read .pi/skills/attractor-typescript-test-review/SKILL.md and review changed tests coverage. [STATUS: fail] if critical gaps else [STATUS: success]."
 
   stage "gate" kind="decision" {
     route when="outcome(\"review_code\") != \"success\" || outcome(\"review_security\") != \"success\" || outcome(\"review_perf\") != \"success\" || outcome(\"review_tests\") != \"success\" || outcome(\"selfci\") != \"success\"" to="fix"
