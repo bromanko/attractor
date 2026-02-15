@@ -210,6 +210,20 @@ describe("defaultParseOutcome", () => {
     expect(outcome.failure_class).toBe("empty_response");
   });
 
+  it("retries codergen node with empty response instead of silent success", () => {
+    const outcome = defaultParseOutcome("", codergenNode, ctx);
+    expect(outcome.status).toBe("retry");
+    expect(outcome.failure_reason).toBe("LLM session produced an empty response");
+    expect(outcome.failure_class).toBe("empty_response");
+  });
+
+  it("retries codergen node with whitespace-only response", () => {
+    const outcome = defaultParseOutcome("  \n  \t  ", codergenNode, ctx);
+    expect(outcome.status).toBe("retry");
+    expect(outcome.failure_reason).toBe("LLM session produced an empty response");
+    expect(outcome.failure_class).toBe("empty_response");
+  });
+
   it("uses last status marker when multiple appear in response (last-marker-wins)", () => {
     const text =
       "Earlier I mentioned [STATUS: fail] as an example.\n" +
@@ -859,12 +873,14 @@ describe("PiBackend", () => {
     warnSpy.mockRestore();
   });
 
-  it("returns success when getLastAssistantText returns empty (no failure marker)", async () => {
+  it("returns retry when getLastAssistantText returns empty", async () => {
     const { backend } = createTestBackend("");
     const outcome = await backend.run(makeNode(), "Do it", new Context());
 
-    // Empty response still parses as success (no failure marker)
-    expect(outcome.status).toBe("success");
+    // Empty response from codergen node triggers retry, not silent success
+    expect(outcome.status).toBe("retry");
+    expect(outcome.failure_reason).toBe("LLM session produced an empty response");
+    expect(outcome.failure_class).toBe("empty_response");
   });
 });
 

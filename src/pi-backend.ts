@@ -149,6 +149,15 @@ export function defaultParseOutcome(
     outcome.failure_class = text.trim().length === 0
       ? "empty_response"
       : "missing_status_marker";
+  } else if (text.trim().length === 0) {
+    // Empty response from a non-auto-status codergen node.  The LLM session
+    // ended without producing any text (e.g. it exhausted its tool-call
+    // budget while still reading files).  Treating this as success would
+    // propagate an empty result to downstream stages — fail with a retry
+    // hint so the engine can re-attempt the stage.
+    outcome.status = "retry";
+    outcome.failure_reason = "LLM session produced an empty response";
+    outcome.failure_class = "empty_response";
   }
 
   // Preferred label

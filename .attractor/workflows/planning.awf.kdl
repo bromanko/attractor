@@ -5,9 +5,9 @@ workflow "Planning" {
 
   stage "ws_create" kind="workspace.create" workspace_name="planning"
 
-  stage "plan" kind="llm" model="gpt-5.3-codex" provider="openai-codex" prompt="You are working on an existing TypeScript project.\nRead the project structure, README, existing code, and tests to understand the codebase thoroughly.\n\nThen create a detailed implementation plan for the goal.\n\nGoal: $goal\n\nYour plan should include:\n1. Summary\n2. Files to change\n3. Approach\n4. Edge cases\n5. Test cases\n6. Open questions\n\nOutput a concise structured plan."
+  stage "plan" kind="llm" model="claude-opus-4-6" provider="anthropic" prompt="You are working on an existing TypeScript project.\nRead the project structure, README, existing code, and tests to understand the codebase thoroughly.\n\nThen create a detailed implementation plan for the goal.\n\nGoal: $goal\n\nYour plan should include:\n1. Summary\n2. Files to change\n3. Approach\n4. Edge cases\n5. Test cases\n6. Open questions\n\nOutput a concise structured plan."
 
-  stage "plan_review" kind="llm" model="gpt-5.3-codex" provider="openai-codex" auto_status=true prompt="You are a senior engineer reviewing an implementation plan.\n\nIf the plan is sound enough to implement, output [STATUS: success].\nIf there are serious gaps, output [STATUS: fail] with [FAILURE_REASON: ...]."
+  stage "plan_review" kind="llm" model="claude-opus-4-6" provider="anthropic" auto_status=true prompt="You are a senior engineer reviewing an implementation plan.\n\nIf the plan is sound enough to implement, output [STATUS: success].\nIf there are serious gaps, output [STATUS: fail] with [FAILURE_REASON: ...]."
 
   stage "human_review" kind="human" {
     prompt "Review the plan and the LLM critique. You have final authority."
@@ -20,11 +20,11 @@ workflow "Planning" {
     }
   }
 
-  stage "plan_revise" kind="llm" model="gpt-5.3-codex" provider="openai-codex" response_key_base="plan" prompt="Revise the plan based on human.gate.feedback and plan_review.response. Output the complete revised plan." {
+  stage "plan_revise" kind="llm" model="claude-opus-4-6" provider="anthropic" response_key_base="plan" prompt="Revise the plan based on human.gate.feedback and plan_review.response. Output the complete revised plan." {
     retry max_attempts=2 backoff="exponential"
   }
 
-  stage "write_plan" kind="llm" model="gpt-5.3-codex" provider="openai-codex" auto_status=true prompt="Write the final approved plan to ./docs/plans/<slug>.md with frontmatter and decision log. Commit with message: docs: add plan for <slug>.\n\nAfter writing and committing successfully, output [STATUS: success].\nIf anything fails (missing workspace/path, file write failure, commit failure, or verification concern), output [STATUS: fail] and [FAILURE_REASON: ...]." {
+  stage "write_plan" kind="llm" model="claude-opus-4-6" provider="anthropic" auto_status=true prompt="Write the final approved plan to ./docs/plans/<slug>.md with frontmatter and decision log. Commit with message: docs: add plan for <slug>.\n\nAfter writing and committing successfully, output [STATUS: success].\nIf anything fails (missing workspace/path, file write failure, commit failure, or verification concern), output [STATUS: fail] and [FAILURE_REASON: ...]." {
     retry max_attempts=2 backoff="exponential"
   }
 
