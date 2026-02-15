@@ -291,11 +291,13 @@ export class PiNativeBackend implements CodergenBackend {
       }
 
       // -- Send prompt through pi's agent ------------------------------------
-      // Wait for pi to be idle before sending, so we don't queue a followUp
-      // (followUps cause pi to skip/abbreviate tool execution).
+      // Wait for pi to be idle before sending, then deliver as follow-up.
+      // This ensures that if a race leaves pi briefly busy, our prompt queues
+      // behind the active turn instead of steering/interruption (which can
+      // cause remaining tool calls to be skipped).
       try {
         await ctx.waitForIdle();
-        await Promise.resolve(pi.sendUserMessage(fullPrompt));
+        await Promise.resolve(pi.sendUserMessage(fullPrompt, { deliverAs: "followUp" }));
         await ctx.waitForIdle();
       } finally {
         if (abortHandler) {

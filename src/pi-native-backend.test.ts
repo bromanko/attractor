@@ -155,6 +155,7 @@ describe("PiNativeBackend", () => {
 
     expect(mockPi.sendUserMessage).toHaveBeenCalledWith(
       expect.stringContaining("Do the thing"),
+      { deliverAs: "followUp" },
     );
     expect(mockCtx.waitForIdle).toHaveBeenCalled();
     expect(outcome.status).toBe("success");
