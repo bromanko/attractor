@@ -26,6 +26,8 @@ workflow "Planning" {
 
   stage "write_plan" kind="llm" model="gpt-5.3-codex" provider="openai-codex" prompt="Write the final approved plan to ./docs/plans/<slug>.md with frontmatter and decision log. Commit with message: docs: add plan for <slug>."
 
+  stage "verify_write_plan" kind="tool" command="bash -lc 'set -euo pipefail; jj log -r \"@-\" --no-graph -T \"description\" --limit 1 | grep -Eq \"^docs: add plan for .+\"; jj show \"@-\" --name-only | grep -Eq \"^docs/plans/.+\\.md$\"'"
+
   stage "ws_merge" kind="workspace.merge"
   stage "ws_cleanup" kind="workspace.cleanup"
   stage "exit" kind="exit"
@@ -34,7 +36,8 @@ workflow "Planning" {
   transition from="plan" to="plan_review"
   transition from="plan_review" to="human_review"
   transition from="plan_revise" to="plan_review"
-  transition from="write_plan" to="ws_merge"
+  transition from="write_plan" to="verify_write_plan"
+  transition from="verify_write_plan" to="ws_merge"
   transition from="ws_merge" to="ws_cleanup"
   transition from="ws_cleanup" to="exit"
 }
