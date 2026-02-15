@@ -1,9 +1,10 @@
 /**
- * attractor-panel.ts — Rich TUI panel for Attractor pipeline execution.
+ * attractor-panel.ts — TUI panel for Attractor pipeline execution.
  *
  * Uses pi's ctx.ui to show:
  *  - Status bar: attractor label, progress counter, spinner, current stage
- *  - Notifications: step results (output/response), failures, final summary
+ *  - Bracket messages: "Starting [stage]..." / "✔ [stage] (elapsed)" in the
+ *    conversation area. Actual LLM output streams natively through pi's agent.
  */
 
 import type { PipelineEvent } from "../pipeline/types.js";
@@ -24,7 +25,7 @@ export interface StageMessage {
 
 export interface StageMessageDetails {
   stage: string;
-  state: "success" | "fail";
+  state: "success" | "fail" | "started";
   elapsed?: string;
   output?: string;
   error?: string;
@@ -63,7 +64,6 @@ interface StageEntry {
 // ---------------------------------------------------------------------------
 
 const STATUS_KEY = "attractor";
-const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const LABEL = "attractor";
 export const CUSTOM_MESSAGE_TYPE = "attractor-stage";
 
@@ -76,11 +76,7 @@ export class AttractorPanel {
   private _stages: StageEntry[] = [];
   private _pipelineRunning = false;
   private _lastUsage: RunUsageSummary | undefined;
-  private _spinnerIndex = 0;
   private _totalNodes = 0;
-  private _spinnerTimer: ReturnType<typeof setInterval> | undefined;
-  private _lastStatusDetail = "";
-  private _lastStatusColor = "warning";
 
   constructor(ui: PanelUI, theme: PanelTheme) {
     this._ui = ui;
@@ -99,20 +95,20 @@ export class AttractorPanel {
       case "pipeline_started":
         this._pipelineRunning = true;
         this._totalNodes = typeof d.nodeCount === "number" ? d.nodeCount : 0;
-        this._status("▶", "running", "warning");
+        this._status("running", "warning");
         break;
 
       case "pipeline_resumed":
         this._pipelineRunning = true;
         this._totalNodes = typeof d.nodeCount === "number" ? d.nodeCount : 0;
-        this._status("♻", `resuming at ${d.from}`, "warning");
+        this._status(`resuming at ${d.from}`, "warning");
         break;
 
       case "stage_started": {
         const name = String(d.name);
         this._stages.push({ name, state: "running", startedAt: Date.now() });
-        this._status(this._spin(), name, "warning");
-        this._startSpinner();
+        this._status(name, "warning");
+        this._sendStageStarted(name);
         break;
       }
 
@@ -143,20 +139,18 @@ export class AttractorPanel {
         const name = String(d.name);
         const entry = this._findStage(name);
         if (entry) entry.state = "retry";
-        this._status("↻", `${name} — retrying`, "warning");
+        this._status(`${name} — retrying`, "warning");
         break;
       }
 
       case "pipeline_completed":
         this._pipelineRunning = false;
-        this._stopSpinner();
-        this._status("✔", "completed", "success");
+        this._status("completed", "success");
         break;
 
       case "pipeline_failed": {
         this._pipelineRunning = false;
-        this._stopSpinner();
-        this._status("✘", "failed", "error");
+        this._status("failed", "error");
         if (d.error) {
           this._ui.notify(
             `${this._theme.fg("error", "✘ Pipeline failed:")} ${d.error}`,
@@ -168,8 +162,7 @@ export class AttractorPanel {
 
       case "pipeline_cancelled":
         this._pipelineRunning = false;
-        this._stopSpinner();
-        this._status("⊘", "cancelled", "warning");
+        this._status("cancelled", "warning");
         break;
 
       case "usage_update": {
@@ -179,20 +172,24 @@ export class AttractorPanel {
       }
 
       case "agent_text": {
-        const stageId = String(d.stageId);
-        this._status(this._spin(), `${stageId} — streaming`, "warning");
+        const stageId = typeof d.stageId === "string" ? d.stageId : undefined;
+        const text = typeof d.text === "string" ? d.text.trim() : "";
+        if (stageId && text.length > 0) {
+          this._status(`${stageId} — writing`, "warning");
+        }
         break;
       }
 
       case "agent_tool_start": {
-        const stageId = String(d.stageId);
-        const toolName = String(d.toolName);
-        this._status(this._spin(), `${stageId} → ${toolName}`, "warning");
+        const stageId = typeof d.stageId === "string" ? d.stageId : undefined;
+        const toolName = typeof d.toolName === "string" ? d.toolName : undefined;
+        if (stageId && toolName) {
+          this._status(`${stageId} — ${toolName}`, "warning");
+        }
         break;
       }
 
-      case "agent_tool_end":
-        // Status will update on next event; nothing specific to show here.
+      default:
         break;
     }
   }
@@ -240,7 +237,6 @@ export class AttractorPanel {
 
   /** Tear down panel UI elements. */
   dispose(): void {
-    this._stopSpinner();
     this._ui.setStatus(STATUS_KEY, undefined);
   }
 
@@ -260,34 +256,12 @@ export class AttractorPanel {
   // Private
   // -----------------------------------------------------------------------
 
-  /** Format a status string with the attractor label, spinner/icon, and detail. */
-  private _status(icon: string, detail: string, color: string): void {
-    this._lastStatusDetail = detail;
-    this._lastStatusColor = color;
+  /** Format a status string with the attractor label, progress, and detail. */
+  private _status(detail: string, color: string): void {
     const prefix = this._theme.fg("dim", `${LABEL} `);
     const progress = this._progressTag();
-    const body = this._theme.fg(color, `${icon} ${detail}`);
+    const body = this._theme.fg(color, detail);
     this._ui.setStatus(STATUS_KEY, `${prefix}${progress}${body}`);
-  }
-
-  /** Start the spinner interval timer. Re-renders status every 80ms. */
-  private _startSpinner(): void {
-    if (this._spinnerTimer) return;
-    this._spinnerTimer = setInterval(() => {
-      if (!this._pipelineRunning) {
-        this._stopSpinner();
-        return;
-      }
-      this._status(this._spin(), this._lastStatusDetail, this._lastStatusColor);
-    }, 80);
-  }
-
-  /** Stop the spinner interval timer. */
-  private _stopSpinner(): void {
-    if (this._spinnerTimer) {
-      clearInterval(this._spinnerTimer);
-      this._spinnerTimer = undefined;
-    }
   }
 
   /** Return a "[2/5] " progress tag or "" if we don't know the total. */
@@ -299,11 +273,14 @@ export class AttractorPanel {
     return this._theme.fg("dim", `[${completed}/${this._totalNodes}] `);
   }
 
-  /** Advance the spinner and return the current frame. */
-  private _spin(): string {
-    const frame = SPINNER_FRAMES[this._spinnerIndex % SPINNER_FRAMES.length];
-    this._spinnerIndex++;
-    return frame;
+  /** Send a "Starting [stage]..." message to the conversation area. */
+  private _sendStageStarted(name: string): void {
+    this._ui.sendMessage({
+      customType: CUSTOM_MESSAGE_TYPE,
+      content: `▶ Starting ${name}…`,
+      display: true,
+      details: { stage: name, state: "started" },
+    });
   }
 
   /** Send a stage completion message to the conversation area. */

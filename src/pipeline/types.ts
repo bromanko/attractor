@@ -253,6 +253,7 @@ export type PipelineEventKind =
   | "usage_update"
   | "agent_text"
   | "agent_tool_start"
+  | "agent_tool_update"
   | "agent_tool_end";
 
 export type PipelineEvent = {

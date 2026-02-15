@@ -1,18 +1,32 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { PipelineEvent } from "../pipeline/types.js";
-import { AttractorPanel, type PanelUI, type PanelTheme } from "./attractor-panel.js";
+import {
+  AttractorPanel,
+  type PanelUI,
+  type PanelTheme,
+  type StageMessage,
+  type StageMessageDetails,
+} from "./attractor-panel.js";
 
-function mockUI(): PanelUI & { calls: Record<string, any[]> } {
-  const calls: Record<string, any[]> = {
+type NotifyType = "info" | "warning" | "error" | undefined;
+
+type MockUICalls = {
+  setStatus: [key: string, text: string | undefined][];
+  notify: [message: string, type?: NotifyType][];
+  sendMessage: [message: StageMessage][];
+};
+
+function mockUI(): PanelUI & { calls: MockUICalls } {
+  const calls: MockUICalls = {
     setStatus: [],
     notify: [],
     sendMessage: [],
   };
   return {
     calls,
-    setStatus: vi.fn((...args) => calls.setStatus.push(args)),
-    notify: vi.fn((...args) => calls.notify.push(args)),
-    sendMessage: vi.fn((...args) => calls.sendMessage.push(args)),
+    setStatus: vi.fn((key: string, text: string | undefined) => calls.setStatus.push([key, text])),
+    notify: vi.fn((message: string, type?: NotifyType) => calls.notify.push([message, type])),
+    sendMessage: vi.fn((message: StageMessage) => calls.sendMessage.push([message])),
   };
 }
 
@@ -30,6 +44,27 @@ function makeEvent(kind: string, data: Record<string, unknown> = {}): PipelineEv
     timestamp: new Date().toISOString(),
     data,
   };
+}
+
+function findStageMessage(
+  ui: ReturnType<typeof mockUI>,
+  details: Pick<StageMessageDetails, "stage" | "state">,
+): StageMessage | undefined {
+  return ui.calls.sendMessage
+    .map(([message]) => message)
+    .find((message) =>
+      message.details.stage === details.stage &&
+      message.details.state === details.state,
+    );
+}
+
+function findStageMessageByState(
+  ui: ReturnType<typeof mockUI>,
+  state: StageMessageDetails["state"],
+): StageMessage | undefined {
+  return ui.calls.sendMessage
+    .map(([message]) => message)
+    .find((message) => message.details.state === state);
 }
 
 describe("AttractorPanel", () => {
@@ -70,28 +105,10 @@ describe("AttractorPanel", () => {
     expect(lastCall[1]).toContain("implement");
   });
 
-  it("shows spinner on stage start", () => {
+  it("shows stage name in status on stage start", () => {
     panel.handleEvent(makeEvent("pipeline_started", { name: "Test", nodeCount: 3 }));
     panel.handleEvent(makeEvent("stage_started", { name: "plan" }));
-    const statusText = ui.calls.setStatus[ui.calls.setStatus.length - 1][1];
-    // Should contain a spinner frame (braille character)
-    expect(statusText).toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/);
-  });
-
-  it("shows tool name in status on agent_tool_start", () => {
-    panel.handleEvent(makeEvent("stage_started", { name: "implement" }));
-    panel.handleEvent(makeEvent("agent_tool_start", { stageId: "implement", toolName: "bash", toolCallId: "t1" }));
-    const statusText = ui.calls.setStatus[ui.calls.setStatus.length - 1][1];
-    expect(statusText).toContain("implement");
-    expect(statusText).toContain("bash");
-  });
-
-  it("shows streaming indicator on agent_text", () => {
-    panel.handleEvent(makeEvent("stage_started", { name: "plan" }));
-    panel.handleEvent(makeEvent("agent_text", { stageId: "plan", text: "analyzing..." }));
-    const statusText = ui.calls.setStatus[ui.calls.setStatus.length - 1][1];
-    expect(statusText).toContain("plan");
-    expect(statusText).toContain("streaming");
+    expect(ui.setStatus).toHaveBeenCalledWith("attractor", expect.stringContaining("plan"));
   });
 
   it("shows retry in status", () => {
@@ -127,7 +144,19 @@ describe("AttractorPanel", () => {
   });
 
   // -----------------------------------------------------------------------
-  // Stage completion notifications
+  // Stage start messages
+  // -----------------------------------------------------------------------
+
+  it("sends 'Starting [stage]...' message on stage start", () => {
+    panel.handleEvent(makeEvent("stage_started", { name: "plan" }));
+    const msg = findStageMessageByState(ui, "started");
+    expect(msg).toBeDefined();
+    expect(msg!.details.stage).toBe("plan");
+    expect(msg!.details.state).toBe("started");
+  });
+
+  // -----------------------------------------------------------------------
+  // Stage completion messages
   // -----------------------------------------------------------------------
 
   it("sends message on stage completion with output", () => {
@@ -137,10 +166,9 @@ describe("AttractorPanel", () => {
       output: "Compiled 42 files successfully.\nAll modules linked.",
     }));
 
-    const msg = ui.calls.sendMessage.find((c: any[]) => c[0].details.stage === "build");
+    const msg = findStageMessage(ui, { stage: "build", state: "success" });
     expect(msg).toBeDefined();
-    expect(msg![0].details.state).toBe("success");
-    expect(msg![0].details.output).toContain("Compiled 42 files");
+    expect(msg!.details.output).toContain("Compiled 42 files");
   });
 
   it("sends message on stage completion with notes when no output", () => {
@@ -150,9 +178,9 @@ describe("AttractorPanel", () => {
       notes: "Workspace created at /tmp/ws",
     }));
 
-    const msg = ui.calls.sendMessage.find((c: any[]) => c[0].details.stage === "ws_create");
+    const msg = findStageMessage(ui, { stage: "ws_create", state: "success" });
     expect(msg).toBeDefined();
-    expect(msg![0].details.output).toContain("Workspace created");
+    expect(msg!.details.output).toContain("Workspace created");
   });
 
   it("truncates long output in completion message", () => {
@@ -160,24 +188,24 @@ describe("AttractorPanel", () => {
     panel.handleEvent(makeEvent("stage_started", { name: "verbose" }));
     panel.handleEvent(makeEvent("stage_completed", { name: "verbose", output: longOutput }));
 
-    const msg = ui.calls.sendMessage.find((c: any[]) => c[0].details.stage === "verbose");
+    const msg = findStageMessage(ui, { stage: "verbose", state: "success" });
     expect(msg).toBeDefined();
-    expect(msg![0].content).toContain("…");
-    expect(msg![0].content.length).toBeLessThan(longOutput.length);
+    expect(msg!.content).toContain("…");
+    expect(msg!.content.length).toBeLessThan(longOutput.length);
   });
 
   it("includes elapsed time in completion message", () => {
     panel.handleEvent(makeEvent("stage_started", { name: "slow" }));
-    const entry = panel.stages[0] as any;
+    const entry = panel.stages[0] as { startedAt?: number };
     entry.startedAt = Date.now() - 5000;
     panel.handleEvent(makeEvent("stage_completed", { name: "slow", output: "done" }));
 
-    const msg = ui.calls.sendMessage.find((c: any[]) => c[0].details.stage === "slow");
-    expect(msg![0].details.elapsed).toMatch(/\d+s/);
+    const msg = findStageMessage(ui, { stage: "slow", state: "success" });
+    expect(msg!.details.elapsed).toMatch(/\d+s/);
   });
 
   // -----------------------------------------------------------------------
-  // Stage failure notifications
+  // Stage failure messages
   // -----------------------------------------------------------------------
 
   it("sends message on stage failure with tool details", () => {
@@ -199,13 +227,12 @@ describe("AttractorPanel", () => {
       },
     }));
 
-    const msg = ui.calls.sendMessage.find((c: any[]) => c[0].details.stage === "selfci_check");
+    const msg = findStageMessage(ui, { stage: "selfci_check", state: "fail" });
     expect(msg).toBeDefined();
-    expect(msg![0].details.state).toBe("fail");
-    expect(msg![0].content).toContain("bash -lc 'selfci'");
-    expect(msg![0].content).toContain("Exit code: 1");
-    expect(msg![0].content).toContain("FAIL  smoke/selfci structured error");
-    expect(msg![0].content).toContain("First failing check: smoke/selfci structured error");
+    expect(msg!.content).toContain("bash -lc 'selfci'");
+    expect(msg!.content).toContain("Exit code: 1");
+    expect(msg!.content).toContain("FAIL  smoke/selfci structured error");
+    expect(msg!.content).toContain("First failing check: smoke/selfci structured error");
   });
 
   it("sends message on stage failure with plain error", () => {
@@ -215,17 +242,16 @@ describe("AttractorPanel", () => {
       error: "LLM timeout after 30s",
     }));
 
-    const msg = ui.calls.sendMessage.find((c: any[]) => c[0].details.stage === "plan");
+    const msg = findStageMessage(ui, { stage: "plan", state: "fail" });
     expect(msg).toBeDefined();
-    expect(msg![0].details.state).toBe("fail");
-    expect(msg![0].content).toContain("LLM timeout after 30s");
+    expect(msg!.content).toContain("LLM timeout after 30s");
   });
 
   it("notifies on pipeline_failed with error reason", () => {
     panel.handleEvent(makeEvent("pipeline_started", {}));
     panel.handleEvent(makeEvent("pipeline_failed", { error: "Stage failed with no outgoing edge: selfci_check" }));
 
-    const failNotify = ui.calls.notify.find((c: any[]) => c[1] === "error");
+    const failNotify = ui.calls.notify.find((c) => c[1] === "error");
     expect(failNotify).toBeDefined();
     expect(failNotify![0]).toContain("Stage failed with no outgoing edge: selfci_check");
   });
@@ -296,5 +322,29 @@ describe("AttractorPanel", () => {
 
     const lastNotify = ui.calls.notify[ui.calls.notify.length - 1];
     expect(lastNotify[0]).toContain("$0.01");
+  });
+
+  // -----------------------------------------------------------------------
+  // Agent status events
+  // -----------------------------------------------------------------------
+
+  it("updates status on agent_text events", () => {
+    panel.handleEvent(makeEvent("pipeline_started", { nodeCount: 3 }));
+    panel.handleEvent(makeEvent("stage_started", { name: "plan" }));
+    panel.handleEvent(makeEvent("agent_text", { stageId: "plan", text: "Working on draft" }));
+
+    const lastCall = ui.calls.setStatus[ui.calls.setStatus.length - 1];
+    expect(lastCall[1]).toContain("plan");
+    expect(lastCall[1]).toContain("writing");
+  });
+
+  it("updates status on agent_tool_start events", () => {
+    panel.handleEvent(makeEvent("pipeline_started", { nodeCount: 3 }));
+    panel.handleEvent(makeEvent("stage_started", { name: "plan" }));
+    panel.handleEvent(makeEvent("agent_tool_start", { stageId: "plan", toolName: "bash" }));
+
+    const lastCall = ui.calls.setStatus[ui.calls.setStatus.length - 1];
+    expect(lastCall[1]).toContain("plan");
+    expect(lastCall[1]).toContain("bash");
   });
 });

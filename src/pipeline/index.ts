@@ -84,6 +84,8 @@ export { hasGraphEasy, runGraphEasy } from "./graph-easy.js";
 // Pi SDK Backend
 export { PiBackend } from "../pi-backend.js";
 export type { PiBackendConfig } from "../pi-backend.js";
+export { PiNativeBackend } from "../pi-native-backend.js";
+export type { PiNativeBackendConfig } from "../pi-native-backend.js";
 
 // Re-export ToolMode for CLI
 export type { ToolMode } from "../pi-backend.js";

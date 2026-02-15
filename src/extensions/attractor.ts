@@ -11,12 +11,10 @@ import { existsSync } from "node:fs";
 import { hasGraphEasy, runGraphEasy } from "../pipeline/graph-easy.js";
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import {
-  AuthStorage,
   ModelRegistry,
 } from "@mariozechner/pi-coding-agent";
 import {
   runPipeline,
-  PiBackend,
   AutoApproveInterviewer,
   parseWorkflowKdl,
   validateWorkflow,
@@ -33,6 +31,7 @@ import type {
   ToolMode,
   WorkflowDefinition,
 } from "../pipeline/index.js";
+import { PiNativeBackend } from "../pi-native-backend.js";
 import { parseCommand, CommandParseError, discoverWorkflows } from "./attractor-command.js";
 import type { ParsedRunCommand, ParsedValidateCommand, ParsedShowCommand, ShowFormat, WorkflowCatalogEntry } from "./attractor-command.js";
 import { PiInterviewer } from "./attractor-interviewer.js";
@@ -51,6 +50,12 @@ export default function attractorExtension(pi: ExtensionAPI): void {
     if (!details) {
       const text = typeof message.content === "string" ? message.content : "";
       return new Text(text, 0, 0);
+    }
+
+    // "started" messages are lightweight headers
+    if (details.state === "started") {
+      const header = `${theme.fg("dim", "▶")} ${theme.bold(details.stage)}${theme.fg("dim", "…")}`;
+      return new Text(header, 0, 0);
     }
 
     const isSuccess = details.state === "success";
@@ -383,8 +388,7 @@ async function handleRun(
   const logsRoot = cmd.logs ?? ".attractor/logs";
   const toolMode: ToolMode = (cmd.tools as ToolMode) ?? "coding";
 
-  // Set up panel early so backend can stream events to it.
-  // Wrap ctx.ui to add sendMessage (bridges to pi.sendMessage).
+  // Set up panel for status bar + stage bracket messages.
   const panelUI = {
     setStatus: (key: string, text: string | undefined) => ctx.ui.setStatus(key, text),
     notify: (message: string, type?: "info" | "warning" | "error") => ctx.ui.notify(message, type),
@@ -394,59 +398,17 @@ async function handleRun(
   };
   const panel = new AttractorPanel(panelUI, ctx.ui.theme);
 
-  // Build backend (reuses CLI model/provider defaults)
+  // Build backend — uses pi's own agent so output streams natively.
   let backend: CodergenBackend;
   try {
-    const authStorage = new AuthStorage();
-    const modelRegistry = new ModelRegistry(authStorage);
-    backend = new PiBackend({
+    const modelRegistry = ctx.modelRegistry;
+    backend = new PiNativeBackend({
+      pi,
+      ctx,
       model: modelName,
       provider: providerName,
-      cwd: ctx.cwd,
       toolMode,
-      authStorage,
       modelRegistry,
-      onStageEvent: (nodeId, agentEvent) => {
-        // Bridge agent session events to pipeline events for the panel
-        const ts = new Date().toISOString();
-        switch (agentEvent.type) {
-          case "message_update": {
-            const msg = agentEvent.assistantMessageEvent as { type: string; delta?: string; content?: string };
-            if (msg.type === "text_delta" && msg.delta) {
-              panel.handleEvent({
-                kind: "agent_text",
-                timestamp: ts,
-                data: { stageId: nodeId, text: msg.delta },
-              });
-            }
-            break;
-          }
-          case "tool_execution_start":
-            panel.handleEvent({
-              kind: "agent_tool_start",
-              timestamp: ts,
-              data: {
-                stageId: nodeId,
-                toolName: agentEvent.toolName,
-                toolCallId: agentEvent.toolCallId,
-                args: agentEvent.args,
-              },
-            });
-            break;
-          case "tool_execution_end":
-            panel.handleEvent({
-              kind: "agent_tool_end",
-              timestamp: ts,
-              data: {
-                stageId: nodeId,
-                toolName: agentEvent.toolName,
-                toolCallId: agentEvent.toolCallId,
-                isError: agentEvent.isError,
-              },
-            });
-            break;
-        }
-      },
     });
   } catch (err) {
     panel.dispose();
