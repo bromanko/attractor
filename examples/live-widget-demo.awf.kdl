@@ -1,0 +1,39 @@
+workflow "LiveWidgetDemo" {
+  version 2
+  description "Exercises the live widget: streaming LLM text, tool calls (bash, read, edit, write), multi-stage flow. Run with /attractor run examples/live-widget-demo.awf.kdl"
+  start "explore"
+
+  // Stage 1: LLM reads files and explores the project — generates streaming text + read/ls/grep tools
+  stage "explore" kind="llm" reasoning_effort="low" prompt="\
+You are exploring a small project to understand its structure.\n\
+\n\
+1. List the top-level files with ls.\n\
+2. Read the README.md (or package.json if no README).\n\
+3. Summarize what this project does in 2-3 sentences.\n\
+\n\
+Goal: $goal"
+
+  // Stage 2: Tool stage — runs a bash command that produces incremental output
+  stage "check" kind="tool" command="bash -lc 'echo \"=== Environment ===\"; echo \"node: $(node --version)\"; echo \"npm: $(npm --version)\"; echo \"tsc: $(npx tsc --version 2>/dev/null || echo N/A)\"; echo; echo \"=== Quick lint ===\"; npx tsc --noEmit 2>&1 | tail -5; echo; echo \"Done.\"'"
+
+  // Stage 3: LLM writes a small file — generates streaming text + write/edit tools
+  stage "draft" kind="llm" reasoning_effort="low" prompt="\
+Based on what you learned about the project, write a tiny example file.\n\
+\n\
+Create the file examples/live-widget-scratch.md with:\n\
+- A title\n\
+- One paragraph describing the project\n\
+- A code block showing a key type or function signature from the codebase\n\
+\n\
+Then read back the file you wrote to confirm it looks correct."
+
+  // Stage 4: Tool stage — clean up the scratch file
+  stage "cleanup" kind="tool" command="bash -lc 'rm -f examples/live-widget-scratch.md && echo \"Scratch file cleaned up.\"'"
+
+  stage "exit" kind="exit"
+
+  transition from="explore" to="check"
+  transition from="check" to="draft"
+  transition from="draft" to="cleanup"
+  transition from="cleanup" to="exit"
+}
