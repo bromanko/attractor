@@ -19,7 +19,7 @@ workflow "Implement Plan" {
     route when="true" to="human_review"
   }
 
-  stage "fix" kind="llm" model="claude-opus-4-6" provider="anthropic" prompt="Fix all outstanding issues listed in the review findings below. Address every finding. Commit your fixes incrementally." {
+  stage "fix" kind="llm" model="claude-opus-4-6" provider="anthropic" prompt="Fix all outstanding issues from the review findings and CI failures.\n\n- **HIGH and MEDIUM findings:** Fix every one of these. They are mandatory.\n- **LOW findings:** Use your judgement — fix those that are quick wins or clearly improve the code, skip those that are cosmetic or debatable.\n\nCommit your fixes incrementally." {
     retry max_attempts=3 backoff="exponential"
   }
 
