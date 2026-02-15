@@ -28,7 +28,6 @@ import type {
 } from "./pipeline/types.js";
 import { Context } from "./pipeline/types.js";
 import { defaultParseOutcome, buildContextSummary, loadPromptFiles } from "./pi-backend.js";
-import { shouldParseStatusMarkers } from "./pipeline/status-markers.js";
 
 // ---------------------------------------------------------------------------
 // Valid thinking levels
@@ -41,6 +40,26 @@ const VALID_THINKING_LEVELS = new Set<ThinkingLevel>([
 // Tool name sets for each mode
 const CODING_TOOLS = ["bash", "read", "edit", "write", "grep", "find", "ls"];
 const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"];
+
+/** Tools considered mutating — if any of these completed, skip-retry is unsafe. */
+const MUTATING_TOOLS = new Set(["bash", "edit", "write"]);
+
+// ---------------------------------------------------------------------------
+// Skip detection
+// ---------------------------------------------------------------------------
+
+/** Text pattern indicating a skipped tool result from pi's infrastructure. */
+const SKIP_TEXT_PATTERN = /Skipped due to queued user message/i;
+
+/**
+ * Default timeout (ms) for waiting for agent_end after waitForIdle completes.
+ * If agent_end hasn't arrived within this window, we treat it as a protocol
+ * timeout. 30 seconds is generous — agent_end normally fires within milliseconds.
+ */
+export const AGENT_END_TIMEOUT_MS = 30_000;
+
+/** Maximum number of automatic protocol-failure retries per run. */
+const MAX_PROTOCOL_RETRIES = 1;
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -78,6 +97,12 @@ export interface PiNativeBackendConfig {
    * - "coding"    — read, bash, edit, write, grep, find, ls (default)
    */
   toolMode?: "none" | "read-only" | "coding";
+
+  /**
+   * Timeout (ms) for waiting for agent_end after waitForIdle completes.
+   * @default AGENT_END_TIMEOUT_MS (30_000)
+   */
+  agentEndTimeoutMs?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -103,6 +128,37 @@ function getResponseKeyBase(node: GraphNode): string {
 }
 
 // ---------------------------------------------------------------------------
+// Agent message content block helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Loosely-typed content block — covers text, tool_use, and tool_result
+ * shapes that appear inside `AgentMessage.content` arrays.
+ *
+ * We keep one shared interface so the defensive narrowing cast lives in a
+ * single auditable place (`getContentBlocks`), rather than scattered across
+ * every function that inspects message content.
+ */
+interface ContentBlock {
+  type: string;
+  text?: string;
+  content?: string;
+  name?: string;
+  id?: string;
+}
+
+/**
+ * Safely extract the content blocks from an `AgentMessage`.
+ * Returns an empty array for non-object messages or messages without a
+ * `content` array.
+ */
+function getContentBlocks(msg: AgentMessage): ContentBlock[] {
+  if (typeof msg !== "object" || msg === null || !("role" in msg)) return [];
+  if (!("content" in msg) || !Array.isArray((msg as { content: unknown[] }).content)) return [];
+  return (msg as { content: ContentBlock[] }).content;
+}
+
+// ---------------------------------------------------------------------------
 // Extract text from agent messages
 // ---------------------------------------------------------------------------
 
@@ -125,6 +181,60 @@ function extractAssistantText(messages: AgentMessage[]): string {
   }
   return "";
 }
+
+// ---------------------------------------------------------------------------
+// Skip / mutating-tool detection in agent messages
+// ---------------------------------------------------------------------------
+
+/**
+ * Scan all messages for text matching the skip pattern.
+ * Returns true if any message content (text blocks, tool results) contains
+ * the skip indicator.
+ */
+export function detectSkippedToolResults(messages: AgentMessage[]): boolean {
+  for (const msg of messages) {
+    for (const block of getContentBlocks(msg)) {
+      if (block.type === "text" && typeof block.text === "string" && SKIP_TEXT_PATTERN.test(block.text)) {
+        return true;
+      }
+      // Tool result blocks may have a content or text field
+      if (block.type === "tool_result" && typeof block.content === "string" && SKIP_TEXT_PATTERN.test(block.content)) {
+        return true;
+      }
+      if (block.type === "tool_result" && typeof block.text === "string" && SKIP_TEXT_PATTERN.test(block.text)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Check if any mutating tool (bash, edit, write) was invoked in the messages.
+ * This is used to decide whether auto-retry after a skip is safe.
+ */
+export function detectMutatingToolUse(messages: AgentMessage[]): boolean {
+  for (const msg of messages) {
+    for (const block of getContentBlocks(msg)) {
+      if (block.type === "tool_use" && typeof block.name === "string" && MUTATING_TOOLS.has(block.name)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Dispatch result (return type of _dispatchOnce)
+// ---------------------------------------------------------------------------
+
+/** Result of a single prompt dispatch cycle. */
+type DispatchResult = {
+  cancelled: boolean;
+  cancelReason?: string;
+  responseText: string;
+  messages?: AgentMessage[];
+};
 
 // ---------------------------------------------------------------------------
 // Implementation
@@ -259,77 +369,12 @@ export class PiNativeBackend implements CodergenBackend {
         : combinedPrompt;
 
       // -- Register global handlers once and bind per-run state --------------
-      // pi.on() has no unsubscribe API, so handlers are installed once and
-      // gated by a run token to prevent cross-run contamination.
       this._ensureHandlersRegistered(pi);
 
-      this._activeRunToken = runToken;
-      this._systemPromptOverride = this._config.systemPrompt;
-
-      // -- Set up response capture -------------------------------------------
-      let capturedMessages: AgentMessage[] | undefined;
-      this._onAgentEndForActiveRun = (event) => {
-        if (this._activeRunToken !== runToken) {
-          return;
-        }
-        capturedMessages = event.messages;
-      };
-
-      // -- Set up abort handling ---------------------------------------------
-      let abortHandler: (() => void) | undefined;
-      if (signal) {
-        abortHandler = () => {
-          ctx.abort();
-        };
-        signal.addEventListener("abort", abortHandler, { once: true });
-        if (signal.aborted) {
-          return {
-            status: "cancelled",
-            failure_reason: "Cancelled before prompt dispatch",
-          };
-        }
-      }
-
-      // -- Send prompt through pi's agent ------------------------------------
-      // Wait for pi to be idle before sending, then deliver as follow-up.
-      // This ensures that if a race leaves pi briefly busy, our prompt queues
-      // behind the active turn instead of steering/interruption (which can
-      // cause remaining tool calls to be skipped).
-      try {
-        await ctx.waitForIdle();
-        await Promise.resolve(pi.sendUserMessage(fullPrompt, { deliverAs: "followUp" }));
-        await ctx.waitForIdle();
-      } finally {
-        if (abortHandler) {
-          signal!.removeEventListener("abort", abortHandler);
-        }
-      }
-
-      // Check cancellation
-      if (signal?.aborted) {
-        return {
-          status: "cancelled",
-          failure_reason: "Cancelled during execution",
-        };
-      }
-
-      // -- Extract response text ---------------------------------------------
-      const responseText = capturedMessages
-        ? extractAssistantText(capturedMessages)
-        : "";
-
-      // -- Parse outcome -----------------------------------------------------
-      const parseOutcome =
-        this._config.parseOutcome ?? defaultParseOutcome;
-      const outcome = parseOutcome(responseText, node, context);
-
-      // Merge full response into context_updates
-      const keyBase = getResponseKeyBase(node);
-      outcome.context_updates = {
-        ...outcome.context_updates,
-        [`${keyBase}._full_response`]: responseText,
-      };
-
+      // -- Dispatch with protocol retry logic --------------------------------
+      const outcome = await this._dispatchWithRetry(
+        pi, ctx, runToken, node, fullPrompt, context, signal,
+      );
       return outcome;
     } catch (err) {
       if (signal?.aborted) {
@@ -359,5 +404,205 @@ export class PiNativeBackend implements CodergenBackend {
         this._onAgentEndForActiveRun = undefined;
       }
     }
+  }
+
+  /**
+   * Send the prompt and wait for completion, with protocol-failure retry.
+   * Retries at most once for transient failures (skip, empty response) when
+   * no mutating tool side effects were observed.
+   */
+  private async _dispatchWithRetry(
+    pi: ExtensionAPI,
+    ctx: ExtensionCommandContext,
+    runToken: symbol,
+    node: GraphNode,
+    fullPrompt: string,
+    context: Context,
+    signal: AbortSignal | undefined,
+  ): Promise<Outcome> {
+    let lastOutcome: Outcome | undefined;
+
+    for (let attempt = 0; attempt <= MAX_PROTOCOL_RETRIES; attempt++) {
+      const result = await this._dispatchOnce(pi, ctx, runToken, fullPrompt, signal);
+
+      if (result.cancelled) {
+        return {
+          status: "cancelled",
+          failure_reason: result.cancelReason ?? "Cancelled during execution",
+        };
+      }
+
+      // -- Parse outcome ---------------------------------------------------
+      const parseOutcome = this._config.parseOutcome ?? defaultParseOutcome;
+      const outcome = parseOutcome(result.responseText, node, context);
+
+      const keyBase = getResponseKeyBase(node);
+      outcome.context_updates = {
+        ...outcome.context_updates,
+        [`${keyBase}._full_response`]: result.responseText,
+      };
+
+      // -- Check for skip-protocol failures --------------------------------
+      const hasSkips = result.messages
+        ? detectSkippedToolResults(result.messages)
+        : false;
+      const hasMutating = result.messages
+        ? detectMutatingToolUse(result.messages)
+        : false;
+
+      if (hasSkips) {
+        if (hasMutating) {
+          // Unsafe to retry — mutating tools may have partially executed
+          return {
+            status: "fail",
+            failure_reason:
+              "Tool results were skipped after mutating tool side effects; " +
+              "cannot safely auto-retry. Manual review required.",
+            failure_class: "tool_result_skipped",
+            context_updates: outcome.context_updates,
+          };
+        }
+
+        if (attempt < MAX_PROTOCOL_RETRIES) {
+          context.appendLog(
+            `[PiNativeBackend] Detected skipped tool results on attempt ${attempt + 1}; ` +
+            `retrying (no mutating side effects detected).`,
+          );
+          continue; // retry
+        }
+
+        // Exhausted retries — return explicit skip failure
+        return {
+          status: "fail",
+          failure_reason:
+            "Tool results were skipped (queued user message) and retry was exhausted.",
+          failure_class: "tool_result_skipped",
+          context_updates: outcome.context_updates,
+        };
+      }
+
+      // -- Check for protocol failures eligible for retry ------------------
+      const isProtocolFailure = outcome.failure_class === "missing_status_marker" ||
+        outcome.failure_class === "empty_response";
+
+      if (isProtocolFailure && attempt < MAX_PROTOCOL_RETRIES && !hasMutating) {
+        context.appendLog(
+          `[PiNativeBackend] Protocol failure (${outcome.failure_class}) on attempt ${attempt + 1}; ` +
+          `retrying.`,
+        );
+        continue; // retry
+      }
+
+      lastOutcome = outcome;
+      break;
+    }
+
+    // Defensive: should be unreachable — every code path either returns
+    // early or sets lastOutcome before breaking.
+    if (!lastOutcome) {
+      return {
+        status: "fail",
+        failure_reason: "Protocol retry loop exited without producing an outcome",
+        failure_class: "empty_response",
+      };
+    }
+    return lastOutcome;
+  }
+
+  /**
+   * Perform a single send-and-wait cycle. Returns the captured messages
+   * and extracted response text, or a cancellation indicator.
+   */
+  private async _dispatchOnce(
+    pi: ExtensionAPI,
+    ctx: ExtensionCommandContext,
+    runToken: symbol,
+    fullPrompt: string,
+    signal: AbortSignal | undefined,
+  ): Promise<DispatchResult> {
+    // Reset handler state for this attempt. Safe across retries because:
+    // - The runToken check in the agent_end handler gates cross-attempt events
+    // - The new agentEndResolve/capturedMessages replace the previous attempt's
+    //   locals before waitForIdle dispatches the next prompt
+    this._activeRunToken = runToken;
+    this._systemPromptOverride = this._config.systemPrompt;
+
+    let capturedMessages: AgentMessage[] | undefined;
+    let agentEndResolve: (() => void) | undefined;
+    const agentEndPromise = new Promise<void>((resolve) => {
+      agentEndResolve = resolve;
+    });
+
+    this._onAgentEndForActiveRun = (event) => {
+      if (this._activeRunToken !== runToken) {
+        return;
+      }
+      capturedMessages = event.messages;
+      agentEndResolve?.();
+    };
+
+    // -- Set up abort handling ---------------------------------------------
+    let abortHandler: (() => void) | undefined;
+    if (signal) {
+      abortHandler = () => {
+        ctx.abort();
+        agentEndResolve?.(); // unblock waiting
+      };
+      signal.addEventListener("abort", abortHandler, { once: true });
+      if (signal.aborted) {
+        signal.removeEventListener("abort", abortHandler);
+        return { cancelled: true, cancelReason: "Cancelled before prompt dispatch", responseText: "" };
+      }
+    }
+
+    try {
+      // -- Send prompt through pi's agent ----------------------------------
+      await ctx.waitForIdle();
+      await Promise.resolve(pi.sendUserMessage(fullPrompt, { deliverAs: "followUp" }));
+      await ctx.waitForIdle();
+
+      // -- Completion latch: wait for agent_end if not yet captured ---------
+      if (!capturedMessages) {
+        const timeoutMs = this._config.agentEndTimeoutMs ?? AGENT_END_TIMEOUT_MS;
+        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+        const timeoutPromise = new Promise<"timeout">((resolve) => {
+          timeoutHandle = setTimeout(() => resolve("timeout"), timeoutMs);
+        });
+
+        const result = await Promise.race([
+          agentEndPromise.then(() => "resolved" as const),
+          timeoutPromise,
+        ]);
+
+        if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+
+        if (result === "timeout" && !capturedMessages) {
+          return {
+            cancelled: false,
+            responseText: "",
+            messages: undefined,
+          };
+        }
+      }
+    } finally {
+      if (abortHandler) {
+        signal!.removeEventListener("abort", abortHandler);
+      }
+    }
+
+    // Check cancellation
+    if (signal?.aborted) {
+      return { cancelled: true, cancelReason: "Cancelled during execution", responseText: "" };
+    }
+
+    const responseText = capturedMessages
+      ? extractAssistantText(capturedMessages)
+      : "";
+
+    return {
+      cancelled: false,
+      responseText,
+      messages: capturedMessages,
+    };
   }
 }
