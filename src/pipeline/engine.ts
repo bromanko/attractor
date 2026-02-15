@@ -211,7 +211,7 @@ export type PipelineConfig = {
   onEvent?: (event: PipelineEvent) => void;
   /**
    * If true, automatically clean up any jj workspace created during this
-   * pipeline run when the pipeline fails. Defaults to true.
+   * pipeline run when the pipeline fails. Defaults to false.
    */
   cleanupWorkspaceOnFailure?: boolean;
   /** Custom jj runner for workspace operations (useful for testing). */
@@ -493,7 +493,7 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
   await mkdir(logsRoot, { recursive: true });
   emit(config, "pipeline_started", { name: graph.name, nodeCount: graph.nodes.length });
 
-  const shouldCleanupWorkspace = config.cleanupWorkspaceOnFailure !== false;
+  const shouldCleanupWorkspace = config.cleanupWorkspaceOnFailure === true;
 
   // Helper: build a PipelineFailureSummary from the first failed stage.
   // Handles tool stages (structured tool_failure) and LLM/codergen stages

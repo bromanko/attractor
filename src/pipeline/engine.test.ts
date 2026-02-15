@@ -1035,6 +1035,85 @@ describe("Pipeline Cancellation", () => {
     expect(result.status).toBe("cancelled");
     expect(cleanupCalled).toBe(false);
   });
+
+  it("workspace is not emergency-cleaned on failure by default", async () => {
+    let cleanupCalled = false;
+
+    const failingBackend: CodergenBackend = {
+      async run(node, _prompt, context) {
+        if (node.id === "work") {
+          context.set("workspace.path", "/tmp/fake-ws");
+          context.set("workspace.name", "fake-ws");
+          return { status: "fail", failure_reason: "boom" };
+        }
+        return `Done: ${node.id}`;
+      },
+    };
+
+    const g = graph({
+      attrs: { goal: "Test" },
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "work", shape: "box", prompt: "Work" },
+      ],
+      edges: [
+        { from: "start", to: "work" },
+        { from: "work", to: "exit" },
+      ],
+    });
+
+    const logsRoot = await tempDir();
+    const result = await runPipeline({
+      graph: g,
+      logsRoot,
+      backend: failingBackend,
+      jjRunner: async () => { cleanupCalled = true; return ""; },
+    });
+
+    expect(result.status).toBe("fail");
+    expect(cleanupCalled).toBe(false);
+  });
+
+  it("workspace is emergency-cleaned on failure when explicitly enabled", async () => {
+    let cleanupCalled = false;
+
+    const failingBackend: CodergenBackend = {
+      async run(node, _prompt, context) {
+        if (node.id === "work") {
+          context.set("workspace.path", "/tmp/fake-ws");
+          context.set("workspace.name", "fake-ws");
+          return { status: "fail", failure_reason: "boom" };
+        }
+        return `Done: ${node.id}`;
+      },
+    };
+
+    const g = graph({
+      attrs: { goal: "Test" },
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "work", shape: "box", prompt: "Work" },
+      ],
+      edges: [
+        { from: "start", to: "work" },
+        { from: "work", to: "exit" },
+      ],
+    });
+
+    const logsRoot = await tempDir();
+    const result = await runPipeline({
+      graph: g,
+      logsRoot,
+      backend: failingBackend,
+      cleanupWorkspaceOnFailure: true,
+      jjRunner: async () => { cleanupCalled = true; return ""; },
+    });
+
+    expect(result.status).toBe("fail");
+    expect(cleanupCalled).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
