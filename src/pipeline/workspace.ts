@@ -18,7 +18,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { randomBytes } from "node:crypto";
-import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rm, stat } from "node:fs/promises";
 import { join, dirname, basename } from "node:path";
 import type { Handler, GraphNode, Context, Graph, Outcome } from "./types.js";
 
@@ -460,6 +460,15 @@ export class WorkspaceMergeHandler implements Handler {
 // workspace.cleanup
 // ---------------------------------------------------------------------------
 
+/** Structured cleanup result details persisted to cleanup.json. */
+export interface CleanupDetails {
+  workspace: string;
+  path: string | undefined;
+  forgotWorkspace: boolean;
+  removedDirectory: boolean;
+  cleanupWarnings: string[];
+}
+
 export class WorkspaceCleanupHandler implements Handler {
   private _jj: JjRunner;
 
@@ -493,12 +502,31 @@ export class WorkspaceCleanupHandler implements Handler {
       };
     }
 
+    const warnings: string[] = [];
+    let forgotWorkspace = false;
+    let removedDirectory = false;
+
     // Forget workspace in jj
     try {
       await jj(["workspace", "forget", wsName], repoRoot || undefined);
+      forgotWorkspace = true;
     } catch (err) {
-      // Already forgotten or doesn't exist — that's fine
-      console.warn(`[workspace] forget during cleanup skipped: ${err}`);
+      const errStr = String(err).toLowerCase();
+      const isBenign =
+        errStr.includes("no such workspace") ||
+        errStr.includes("not found") ||
+        errStr.includes("doesn't exist") ||
+        errStr.includes("does not exist");
+      if (isBenign) {
+        // Already forgotten or doesn't exist — treat as success
+        forgotWorkspace = true;
+      } else {
+        // Real infrastructure error (network, permissions, jj crash, etc.)
+        forgotWorkspace = false;
+        const msg = `workspace forget failed: ${err}`;
+        warnings.push(msg);
+        console.warn(`[workspace] ${msg}`);
+      }
     }
 
     // Remove directory with safety checks
@@ -508,10 +536,32 @@ export class WorkspaceCleanupHandler implements Handler {
         try {
           await rm(wsPath, { recursive: true, force: true });
         } catch (err) {
-          // Directory may already be gone
-          console.warn(`[workspace] rm during cleanup skipped: ${err}`);
+          const msg = `Directory removal failed for ${wsPath}: ${err}`;
+          warnings.push(msg);
+          console.warn(`[workspace] ${msg}`);
         }
+
+        // Verify directory is actually gone
+        try {
+          await stat(wsPath);
+          // If stat succeeds, directory still exists
+          const msg = `Directory still exists after removal attempt: ${wsPath}`;
+          warnings.push(msg);
+          console.warn(`[workspace] ${msg}`);
+          removedDirectory = false;
+        } catch (_err) {
+          // stat failed → directory is gone (expected)
+          removedDirectory = true;
+        }
+      } else {
+        const msg = `Skipped directory removal: ${wsPath} is an ancestor of repo root ${repoRoot}`;
+        warnings.push(msg);
+        console.warn(`[workspace] ${msg}`);
       }
+    } else if (wsPath) {
+      const msg = `Skipped directory removal: path "${wsPath}" does not contain "-ws-" safety marker`;
+      warnings.push(msg);
+      console.warn(`[workspace] ${msg}`);
     }
 
     // Clean up registry
@@ -519,18 +569,44 @@ export class WorkspaceCleanupHandler implements Handler {
       await removeFromRegistry(repoRoot, wsName);
     }
 
+    // Build structured cleanup details
+    const details: CleanupDetails = {
+      workspace: wsName,
+      path: wsPath || undefined,
+      forgotWorkspace,
+      removedDirectory,
+      cleanupWarnings: warnings,
+    };
+
     // Write stage log
     const stageDir = join(logsRoot, node.id);
     await mkdir(stageDir, { recursive: true });
     await writeFile(
       join(stageDir, "cleanup.json"),
-      JSON.stringify({ workspace: wsName, path: wsPath, cleaned: true }, null, 2),
+      JSON.stringify(details, null, 2),
       "utf-8",
     );
 
+    // Determine outcome status
+    const isFullSuccess = forgotWorkspace && (removedDirectory || !wsPath);
+    const status = isFullSuccess ? "success" : "partial_success";
+
+    const notesParts: string[] = [];
+    if (isFullSuccess) {
+      notesParts.push(`Cleaned up workspace "${wsName}".`);
+    } else {
+      notesParts.push(`Partially cleaned up workspace "${wsName}".`);
+      if (!removedDirectory && wsPath) {
+        notesParts.push(`Warning: workspace directory still exists at ${wsPath}.`);
+      }
+      for (const w of warnings) {
+        notesParts.push(`  - ${w}`);
+      }
+    }
+
     return {
-      status: "success",
-      notes: `Cleaned up workspace "${wsName}".`,
+      status,
+      notes: notesParts.join("\n"),
       context_updates: { [WS_CONTEXT.CLEANED_UP]: "true" },
     };
   }

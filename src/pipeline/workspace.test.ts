@@ -18,12 +18,13 @@ import {
   uniquifyWorkspaceName,
   buildMergedHeadsRevset,
   type JjRunner,
+  type CleanupDetails,
 } from "./workspace.js";
 import { Context } from "./types.js";
 import type { GraphNode, Graph } from "./types.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { mkdtemp, rm, readFile, mkdir } from "node:fs/promises";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1144,7 +1145,82 @@ describe("WorkspaceMergeHandler", () => {
 // ---------------------------------------------------------------------------
 
 describe("WorkspaceCleanupHandler", () => {
-  it("forgets workspace and marks cleanup complete", async () => {
+  it("forgets workspace, removes dir, and marks cleanup complete (full success)", async () => {
+    const jj = mockJj({
+      "workspace forget": "",
+    });
+
+    // Create a real temporary workspace dir so rm can actually succeed
+    const logsRoot = await mkdtemp(join(tmpdir(), "ws-test-"));
+    const wsDir = await mkdtemp(join(tmpdir(), "repo-ws-my-feature"));
+    try {
+      const handler = new WorkspaceCleanupHandler(jj);
+      const context = new Context();
+      context.set(WS_CONTEXT.NAME, "my-feature");
+      context.set(WS_CONTEXT.PATH, wsDir);
+      context.set(WS_CONTEXT.REPO_ROOT, "/tmp/test-repo");
+
+      const outcome = await handler.execute(makeNode({ id: "cleanup" }), context, makeGraph(), logsRoot);
+
+      expect(outcome.status).toBe("success");
+      expect(outcome.context_updates).toBeDefined();
+      expect(outcome.context_updates![WS_CONTEXT.CLEANED_UP]).toBe("true");
+      expect(outcome.notes).toContain('Cleaned up workspace "my-feature".');
+
+      // Should have called workspace forget
+      const forgetCall = jj.calls.find((c) => c[0] === "workspace" && c[1] === "forget");
+      expect(forgetCall).toBeDefined();
+      expect(forgetCall).toContain("my-feature");
+
+      // Verify cleanup.json has structured details
+      const details: CleanupDetails = JSON.parse(
+        await readFile(join(logsRoot, "cleanup", "cleanup.json"), "utf-8"),
+      );
+      expect(details.forgotWorkspace).toBe(true);
+      expect(details.removedDirectory).toBe(true);
+      expect(details.cleanupWarnings).toEqual([]);
+    } finally {
+      await rm(logsRoot, { recursive: true, force: true });
+      await rm(wsDir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  it("returns partial_success when dir removal fails", async () => {
+    const jj = mockJj({
+      "workspace forget": "",
+    });
+
+    // Path without "-ws-" bypasses directory removal, producing partial_success.
+    const logsRoot = await mkdtemp(join(tmpdir(), "ws-test-"));
+
+    try {
+      const handler = new WorkspaceCleanupHandler(jj);
+      const context = new Context();
+      context.set(WS_CONTEXT.NAME, "my-feature");
+      // Path without "-ws-" => removal is skipped
+      context.set(WS_CONTEXT.PATH, "/tmp/some-path-without-safety-marker");
+      context.set(WS_CONTEXT.REPO_ROOT, "/tmp/test-repo");
+
+      const outcome = await handler.execute(makeNode({ id: "cleanup" }), context, makeGraph(), logsRoot);
+
+      expect(outcome.status).toBe("partial_success");
+      expect(outcome.notes).toContain("Partially cleaned up");
+      expect(outcome.notes).toContain("safety marker");
+      expect(outcome.context_updates).toBeDefined();
+      expect(outcome.context_updates![WS_CONTEXT.CLEANED_UP]).toBe("true");
+
+      const details: CleanupDetails = JSON.parse(
+        await readFile(join(logsRoot, "cleanup", "cleanup.json"), "utf-8"),
+      );
+      expect(details.forgotWorkspace).toBe(true);
+      expect(details.removedDirectory).toBe(false);
+      expect(details.cleanupWarnings.length).toBeGreaterThan(0);
+    } finally {
+      await rm(logsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("cleanup.json includes forgot/removed flags accurately for nonexistent path", async () => {
     const jj = mockJj({
       "workspace forget": "",
     });
@@ -1159,14 +1235,39 @@ describe("WorkspaceCleanupHandler", () => {
 
       const outcome = await handler.execute(makeNode({ id: "cleanup" }), context, makeGraph(), logsRoot);
 
+      // rm with force: true on a nonexistent path doesn't error,
+      // and stat will fail (dir gone), so this should be success
       expect(outcome.status).toBe("success");
-      expect(outcome.context_updates).toBeDefined();
-      expect(outcome.context_updates![WS_CONTEXT.CLEANED_UP]).toBe("true");
 
-      // Should have called workspace forget
-      const forgetCall = jj.calls.find((c) => c[0] === "workspace" && c[1] === "forget");
-      expect(forgetCall).toBeDefined();
-      expect(forgetCall).toContain("my-feature");
+      const details: CleanupDetails = JSON.parse(
+        await readFile(join(logsRoot, "cleanup", "cleanup.json"), "utf-8"),
+      );
+      expect(details.workspace).toBe("my-feature");
+      expect(details.forgotWorkspace).toBe(true);
+      expect(details.removedDirectory).toBe(true);
+      expect(details.cleanupWarnings).toEqual([]);
+    } finally {
+      await rm(logsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("returns success when wsPath is empty (no directory to remove)", async () => {
+    const jj = mockJj({
+      "workspace forget": "",
+    });
+
+    const logsRoot = await mkdtemp(join(tmpdir(), "ws-test-"));
+    try {
+      const handler = new WorkspaceCleanupHandler(jj);
+      const context = new Context();
+      context.set(WS_CONTEXT.NAME, "my-feature");
+      // No wsPath set
+      context.set(WS_CONTEXT.REPO_ROOT, "/tmp/test-repo");
+
+      const outcome = await handler.execute(makeNode({ id: "cleanup" }), context, makeGraph(), logsRoot);
+
+      expect(outcome.status).toBe("success");
+      expect(outcome.notes).toContain('Cleaned up workspace "my-feature".');
     } finally {
       await rm(logsRoot, { recursive: true, force: true });
     }
@@ -1202,6 +1303,115 @@ describe("WorkspaceCleanupHandler", () => {
       expect(outcome.failure_reason).toContain("No workspace name");
     } finally {
       await rm(logsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("returns partial_success when jj forget fails with a real error", async () => {
+    const baseJj = mockJj();
+    const jj: JjRunner & { calls: string[][] } = Object.assign(
+      async (args: string[], cwd?: string) => {
+        if (args[0] === "workspace" && args[1] === "forget") {
+          baseJj.calls.push(args);
+          throw new Error("fatal: jj crashed unexpectedly");
+        }
+        return baseJj(args, cwd);
+      },
+      { calls: baseJj.calls },
+    );
+
+    const logsRoot = await mkdtemp(join(tmpdir(), "ws-test-"));
+    try {
+      const handler = new WorkspaceCleanupHandler(jj);
+      const context = new Context();
+      context.set(WS_CONTEXT.NAME, "my-feature");
+      context.set(WS_CONTEXT.PATH, "/tmp/nonexistent-ws-my-feature");
+      context.set(WS_CONTEXT.REPO_ROOT, "/tmp/test-repo");
+
+      const outcome = await handler.execute(makeNode({ id: "cleanup" }), context, makeGraph(), logsRoot);
+
+      expect(outcome.status).toBe("partial_success");
+      expect(outcome.notes).toContain("Partially cleaned up");
+      expect(outcome.context_updates).toBeDefined();
+      expect(outcome.context_updates![WS_CONTEXT.CLEANED_UP]).toBe("true");
+
+      const details: CleanupDetails = JSON.parse(
+        await readFile(join(logsRoot, "cleanup", "cleanup.json"), "utf-8"),
+      );
+      expect(details.forgotWorkspace).toBe(false);
+      expect(details.cleanupWarnings.some(w => w.includes("jj crashed"))).toBe(true);
+
+      // Verify warning text appears in the notes output too
+      expect(outcome.notes).toContain("jj crashed");
+    } finally {
+      await rm(logsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("treats 'no such workspace' forget error as benign success", async () => {
+    const baseJj = mockJj();
+    const jj: JjRunner & { calls: string[][] } = Object.assign(
+      async (args: string[], cwd?: string) => {
+        if (args[0] === "workspace" && args[1] === "forget") {
+          baseJj.calls.push(args);
+          throw new Error("Error: No such workspace: my-feature");
+        }
+        return baseJj(args, cwd);
+      },
+      { calls: baseJj.calls },
+    );
+
+    const logsRoot = await mkdtemp(join(tmpdir(), "ws-test-"));
+    try {
+      const handler = new WorkspaceCleanupHandler(jj);
+      const context = new Context();
+      context.set(WS_CONTEXT.NAME, "my-feature");
+      context.set(WS_CONTEXT.PATH, "/tmp/nonexistent-ws-my-feature");
+      context.set(WS_CONTEXT.REPO_ROOT, "/tmp/test-repo");
+
+      const outcome = await handler.execute(makeNode({ id: "cleanup" }), context, makeGraph(), logsRoot);
+
+      // "no such workspace" is benign — forget is treated as success
+      expect(outcome.status).toBe("success");
+
+      const details: CleanupDetails = JSON.parse(
+        await readFile(join(logsRoot, "cleanup", "cleanup.json"), "utf-8"),
+      );
+      expect(details.forgotWorkspace).toBe(true);
+      expect(details.cleanupWarnings).toEqual([]);
+    } finally {
+      await rm(logsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("verifies directory removal via stat for real -ws- path", async () => {
+    const jj = mockJj({
+      "workspace forget": "",
+    });
+
+    const logsRoot = await mkdtemp(join(tmpdir(), "ws-test-"));
+    // Create a real -ws- dir that rm will successfully remove; stat then
+    // confirms it's gone, exercising the stat-verification success path.
+    const wsDir = join(tmpdir(), `test-repo-ws-survive-${Date.now()}`);
+    await mkdir(wsDir, { recursive: true });
+    try {
+      const handler = new WorkspaceCleanupHandler(jj);
+      const context = new Context();
+      context.set(WS_CONTEXT.NAME, "my-feature");
+      context.set(WS_CONTEXT.PATH, wsDir);
+      context.set(WS_CONTEXT.REPO_ROOT, "/tmp/test-repo");
+
+      const outcome = await handler.execute(makeNode({ id: "cleanup" }), context, makeGraph(), logsRoot);
+
+      expect(outcome.status).toBe("success");
+
+      const details: CleanupDetails = JSON.parse(
+        await readFile(join(logsRoot, "cleanup", "cleanup.json"), "utf-8"),
+      );
+      expect(details.removedDirectory).toBe(true);
+      expect(details.cleanupWarnings).toEqual([]);
+    } finally {
+      await rm(logsRoot, { recursive: true, force: true });
+      await rm(wsDir, { recursive: true, force: true }).catch(() => {});
     }
   });
 });
