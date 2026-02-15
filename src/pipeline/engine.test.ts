@@ -175,6 +175,68 @@ describe("Pipeline Engine", () => {
     expect(kinds).toContain("pipeline_completed");
   });
 
+  it("does not emit stage events for the synthetic start node", async () => {
+    const g = graph({
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "work", shape: "box", prompt: "Work" },
+      ],
+      edges: [
+        { from: "start", to: "work" },
+        { from: "work", to: "exit" },
+      ],
+    });
+
+    const events: PipelineEvent[] = [];
+    const logsRoot = await tempDir();
+    await runPipeline({
+      graph: g,
+      logsRoot,
+      backend: successBackend,
+      onEvent: (e) => events.push(e),
+    });
+
+    const stageStarted = events.filter((e) => e.kind === "stage_started");
+    const stageNames = stageStarted.map((e) => e.data.name);
+    expect(stageNames).not.toContain("start");
+    expect(stageNames).toContain("work");
+  });
+
+  it("pipeline_started includes stageCount excluding start and exit nodes", async () => {
+    const g = graph({
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "plan", shape: "box", prompt: "Plan" },
+        { id: "gate", shape: "diamond" },
+        { id: "implement", shape: "box", prompt: "Implement" },
+      ],
+      edges: [
+        { from: "start", to: "plan" },
+        { from: "plan", to: "gate" },
+        { from: "gate", to: "implement", condition: "outcome=success" },
+        { from: "implement", to: "exit" },
+      ],
+    });
+
+    const events: PipelineEvent[] = [];
+    const logsRoot = await tempDir();
+    await runPipeline({
+      graph: g,
+      logsRoot,
+      backend: successBackend,
+      onEvent: (e) => events.push(e),
+    });
+
+    const pipelineStarted = events.find((e) => e.kind === "pipeline_started");
+    expect(pipelineStarted).toBeDefined();
+    // 5 total nodes, minus start (Mdiamond) and exit (Msquare) = 3 user-facing stages
+    expect(pipelineStarted!.data.stageCount).toBe(3);
+    // nodeCount is still the total for backward compatibility
+    expect(pipelineStarted!.data.nodeCount).toBe(5);
+  });
+
   it("saves and can resume from checkpoints", async () => {
     const g = graph({
       nodes: [

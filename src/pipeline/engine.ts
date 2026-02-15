@@ -383,6 +383,13 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
   // Pre-build an index for O(1) node lookups by ID.
   const nodeById = new Map(graph.nodes.map((n) => [n.id, n]));
 
+  // Compute user-facing stage count: total nodes minus the synthetic start
+  // node (Mdiamond) and exit nodes (Msquare). These are infrastructure
+  // nodes that don't emit stage events visible to the user.
+  const stageCount = graph.nodes.filter(
+    (n) => n.id !== startId && !exitIds.has(n.id),
+  ).length;
+
   let currentNode = nodeById.get(startId)!;
 
   // Resume from checkpoint
@@ -487,11 +494,11 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
       }
     }
 
-    emit(config, "pipeline_resumed", { from: currentNode.id, nodeCount: graph.nodes.length });
+    emit(config, "pipeline_resumed", { from: currentNode.id, nodeCount: graph.nodes.length, stageCount });
   }
 
   await mkdir(logsRoot, { recursive: true });
-  emit(config, "pipeline_started", { name: graph.name, nodeCount: graph.nodes.length });
+  emit(config, "pipeline_started", { name: graph.name, nodeCount: graph.nodes.length, stageCount });
 
   const shouldCleanupWorkspace = config.cleanupWorkspaceOnFailure === true;
 
@@ -615,7 +622,13 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
     const maxAttempts = maxRetries + 1;
     let outcome: Outcome | undefined;
 
-    emit(config, "stage_started", { name: node.id, index: completedNodes.length });
+    // The synthetic start node (Mdiamond) is an infrastructure detail —
+    // don't emit stage events for it so progress counters stay accurate.
+    const isStartNode = node.id === startId;
+
+    if (!isStartNode) {
+      emit(config, "stage_started", { name: node.id, index: completedNodes.length });
+    }
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
@@ -730,36 +743,38 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
     const isConditional =
       node.attrs.shape === "diamond" || node.attrs.type === "conditional";
 
-    if (isConditional || outcome.status === "success" || outcome.status === "partial_success") {
-      const completedData: Record<string, unknown> = {
-        name: node.id,
-        index: completedNodes.length - 1,
-      };
-      if (outcome.notes) completedData.notes = outcome.notes;
-      // Include stage output for rendering: tool stdout or LLM response
-      if (outcome.context_updates) {
-        const toolOutput = outcome.context_updates["tool.output"];
-        if (typeof toolOutput === "string" && toolOutput.trim()) {
-          completedData.output = toolOutput;
-        } else {
-          // LLM stages store response under ${nodeId}.response
-          const llmResponse = outcome.context_updates[`${node.id}.response`];
-          if (typeof llmResponse === "string" && llmResponse.trim()) {
-            completedData.output = llmResponse;
+    if (!isStartNode) {
+      if (isConditional || outcome.status === "success" || outcome.status === "partial_success") {
+        const completedData: Record<string, unknown> = {
+          name: node.id,
+          index: completedNodes.length - 1,
+        };
+        if (outcome.notes) completedData.notes = outcome.notes;
+        // Include stage output for rendering: tool stdout or LLM response
+        if (outcome.context_updates) {
+          const toolOutput = outcome.context_updates["tool.output"];
+          if (typeof toolOutput === "string" && toolOutput.trim()) {
+            completedData.output = toolOutput;
+          } else {
+            // LLM stages store response under ${nodeId}.response
+            const llmResponse = outcome.context_updates[`${node.id}.response`];
+            if (typeof llmResponse === "string" && llmResponse.trim()) {
+              completedData.output = llmResponse;
+            }
           }
         }
+        emit(config, "stage_completed", completedData);
+      } else {
+        const stageFailedData: Record<string, unknown> = {
+          name: node.id,
+          error: outcome.failure_reason,
+          logsPath: join(logsRoot, node.id),
+        };
+        if (outcome.tool_failure) {
+          stageFailedData.tool_failure = outcome.tool_failure;
+        }
+        emit(config, "stage_failed", stageFailedData);
       }
-      emit(config, "stage_completed", completedData);
-    } else {
-      const stageFailedData: Record<string, unknown> = {
-        name: node.id,
-        error: outcome.failure_reason,
-        logsPath: join(logsRoot, node.id),
-      };
-      if (outcome.tool_failure) {
-        stageFailedData.tool_failure = outcome.tool_failure;
-      }
-      emit(config, "stage_failed", stageFailedData);
     }
 
     // Capture workspace tip commit for checkpoint recovery

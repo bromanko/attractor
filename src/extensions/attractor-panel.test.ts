@@ -93,8 +93,9 @@ describe("AttractorPanel", () => {
     expect(ui.setStatus).toHaveBeenCalledWith("attractor", expect.stringContaining("completed"));
   });
 
-  it("shows progress count in status", () => {
-    panel.handleEvent(makeEvent("pipeline_started", { name: "Test", nodeCount: 4 }));
+  it("shows progress count in status using stageCount", () => {
+    // stageCount excludes synthetic start + exit nodes
+    panel.handleEvent(makeEvent("pipeline_started", { name: "Test", nodeCount: 6, stageCount: 4 }));
     panel.handleEvent(makeEvent("stage_started", { name: "plan" }));
     panel.handleEvent(makeEvent("stage_completed", { name: "plan" }));
     panel.handleEvent(makeEvent("stage_started", { name: "implement" }));
@@ -103,6 +104,33 @@ describe("AttractorPanel", () => {
     expect(lastCall[1]).toContain("attractor");
     expect(lastCall[1]).toContain("1/4");
     expect(lastCall[1]).toContain("implement");
+  });
+
+  it("falls back to nodeCount when stageCount is absent", () => {
+    panel.handleEvent(makeEvent("pipeline_started", { name: "Test", nodeCount: 4 }));
+    panel.handleEvent(makeEvent("stage_started", { name: "plan" }));
+    panel.handleEvent(makeEvent("stage_completed", { name: "plan" }));
+    panel.handleEvent(makeEvent("stage_started", { name: "implement" }));
+
+    const lastCall = ui.calls.setStatus[ui.calls.setStatus.length - 1];
+    expect(lastCall[1]).toContain("1/4");
+  });
+
+  it("grows denominator dynamically when loop re-visits stages", () => {
+    // Pipeline with 3 user-facing stages, but a loop causes 5 total stage starts
+    panel.handleEvent(makeEvent("pipeline_started", { name: "Test", stageCount: 3 }));
+    panel.handleEvent(makeEvent("stage_started", { name: "implement" }));
+    panel.handleEvent(makeEvent("stage_completed", { name: "implement" }));
+    panel.handleEvent(makeEvent("stage_started", { name: "selfci" }));
+    panel.handleEvent(makeEvent("stage_completed", { name: "selfci" }));
+    panel.handleEvent(makeEvent("stage_started", { name: "gate" }));
+    panel.handleEvent(makeEvent("stage_completed", { name: "gate" }));
+    // Loop back: denominator should now grow beyond original stageCount
+    panel.handleEvent(makeEvent("stage_started", { name: "implement" }));
+
+    const lastCall = ui.calls.setStatus[ui.calls.setStatus.length - 1];
+    // 3 completed, 4 total started — denominator should be at least 4
+    expect(lastCall[1]).toContain("3/4");
   });
 
   it("shows stage name in status on stage start", () => {

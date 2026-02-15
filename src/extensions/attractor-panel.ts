@@ -94,13 +94,18 @@ export class AttractorPanel {
     switch (event.kind) {
       case "pipeline_started":
         this._pipelineRunning = true;
-        this._totalNodes = typeof d.nodeCount === "number" ? d.nodeCount : 0;
+        // Prefer stageCount (excludes synthetic start/exit) over nodeCount
+        this._totalNodes = typeof d.stageCount === "number" ? d.stageCount
+          : typeof d.nodeCount === "number" ? d.nodeCount
+          : 0;
         this._status("running", "warning");
         break;
 
       case "pipeline_resumed":
         this._pipelineRunning = true;
-        this._totalNodes = typeof d.nodeCount === "number" ? d.nodeCount : 0;
+        this._totalNodes = typeof d.stageCount === "number" ? d.stageCount
+          : typeof d.nodeCount === "number" ? d.nodeCount
+          : 0;
         this._status(`resuming at ${d.from}`, "warning");
         break;
 
@@ -264,13 +269,17 @@ export class AttractorPanel {
     this._ui.setStatus(STATUS_KEY, `${prefix}${progress}${body}`);
   }
 
-  /** Return a "[2/5] " progress tag or "" if we don't know the total. */
+  /** Return a "[2/5] " progress tag or "" if we don't know the total.
+   *  The denominator grows dynamically: it starts at the declared stage
+   *  count but increases when loops cause more stages to be visited than
+   *  originally expected. */
   private _progressTag(): string {
-    if (this._totalNodes <= 0) return "";
+    if (this._totalNodes <= 0 && this._stages.length === 0) return "";
     const completed = this._stages.filter(
       (s) => s.state === "success" || s.state === "fail",
     ).length;
-    return this._theme.fg("dim", `[${completed}/${this._totalNodes}] `);
+    const total = Math.max(this._totalNodes, this._stages.length);
+    return this._theme.fg("dim", `[${completed}/${total}] `);
   }
 
   /** Send a "Starting [stage]..." message to the conversation area. */

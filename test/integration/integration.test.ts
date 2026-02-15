@@ -900,8 +900,9 @@ describe("Event emission", () => {
     const kinds = events.map((e) => e.kind);
     expect(kinds[0]).toBe("pipeline_started");
     expect(kinds[kinds.length - 1]).toBe("pipeline_completed");
-    expect(kinds.filter((k) => k === "stage_started").length).toBeGreaterThanOrEqual(2);
-    expect(kinds.filter((k) => k === "stage_completed").length).toBeGreaterThanOrEqual(2);
+    // Synthetic start node no longer emits stage events.
+    expect(kinds.filter((k) => k === "stage_started").length).toBeGreaterThanOrEqual(1);
+    expect(kinds.filter((k) => k === "stage_completed").length).toBeGreaterThanOrEqual(1);
     expect(kinds.filter((k) => k === "checkpoint_saved").length).toBeGreaterThanOrEqual(1);
   });
 
