@@ -44,13 +44,9 @@ Run build/test/selfci commands from within that environment.
 
 ## Validation checklist (before finishing)
 
-Run, at minimum:
+Run `selfci` (which runs lint, test, build, workflow validation, and nix-build).
 
-1. `npm run lint`
-2. `npm test`
-3. `selfci`
-
-If the change is isolated and full tests are expensive, run the most relevant test subset and state what was run.
+If the change is isolated and you want faster feedback during development, you can run individual commands (`npm run lint`, `npm test`, etc.), but the final validation should always be `selfci`.
 
 ## Development methodology
 
