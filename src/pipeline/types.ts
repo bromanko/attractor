@@ -87,6 +87,16 @@ export type StageStatus = "success" | "fail" | "partial_success" | "retry" | "sk
 /** Known failure class values for tool stages. */
 export type ToolFailureClass = "exit_nonzero" | "timeout" | "spawn_error";
 
+/**
+ * Protocol/transient failure classes.
+ * Used by backends to classify failures that may be retried automatically
+ * (e.g. skipped tool results, missing status markers from empty responses).
+ */
+export type ProtocolFailureClass =
+  | "missing_status_marker"
+  | "tool_result_skipped"
+  | "empty_response";
+
 /** Structured failure details from a tool stage. */
 export type ToolStageFailure = {
   failureClass: ToolFailureClass;
@@ -114,6 +124,8 @@ export type Outcome = {
   context_updates?: Record<string, unknown>;
   notes?: string;
   failure_reason?: string;
+  /** Protocol/transient failure class for retry logic. */
+  failure_class?: ProtocolFailureClass;
   /** Structured failure details (populated by tool stages). */
   tool_failure?: ToolStageFailure;
 };
