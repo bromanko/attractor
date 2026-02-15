@@ -26,8 +26,8 @@ import {
 import type { Model, Api } from "@mariozechner/pi-ai";
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 
-import type { CodergenBackend, GraphNode, Outcome, BackendRunOptions } from "./pipeline/types.js";
-import { Context } from "./pipeline/types.js";
+import type { CodergenBackend, GraphNode, Outcome, BackendRunOptions, ReviewFinding } from "./pipeline/types.js";
+import { Context, REVIEW_FINDINGS_KEY } from "./pipeline/types.js";
 import { shouldParseStatusMarkers } from "./pipeline/status-markers.js";
 
 // ---------------------------------------------------------------------------
@@ -198,8 +198,9 @@ export function buildContextSummary(context: Context): string {
   const isVerboseKey = (key: string) =>
     key.endsWith(".response") || key.includes("feedback") || key === "graph.goal";
 
+  // Exclude review.findings from generic dump — it gets a dedicated section.
   const entries = Object.entries(snapshot)
-    .filter(([key]) => !key.startsWith("_"))
+    .filter(([key]) => !key.startsWith("_") && key !== REVIEW_FINDINGS_KEY)
     .map(([key, value]) => {
       const limit = isVerboseKey(key) ? 4000 : 200;
       const text = String(value);
@@ -209,6 +210,17 @@ export function buildContextSummary(context: Context): string {
     .join("\n");
 
   let summary = entries ? `Current pipeline context:\n${entries}` : "";
+
+  // Render accumulated review findings as a structured section
+  const findings = snapshot[REVIEW_FINDINGS_KEY];
+  if (Array.isArray(findings) && findings.length > 0) {
+    summary += "\n\n## Outstanding Review Findings\n\n";
+    for (const f of findings as ReviewFinding[]) {
+      summary += `### ${f.stageId} (${f.status})\n`;
+      summary += `**Reason:** ${f.failureReason}\n\n`;
+      summary += f.response + "\n\n---\n\n";
+    }
+  }
 
   // If running in a workspace, add explicit instructions
   const wsPath = context.getString("workspace.path");
