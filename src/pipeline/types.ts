@@ -196,6 +196,16 @@ export class Context {
     return value.filter((v): v is string => typeof v === "string");
   }
 
+  /** Append a value to a context key that holds an array, creating it if absent. */
+  appendToArray(key: string, value: unknown): void {
+    const existing = this._values[key];
+    if (Array.isArray(existing)) {
+      existing.push(value);
+    } else {
+      this._values[key] = [value];
+    }
+  }
+
   appendLog(entry: string): void {
     this._logs.push(entry);
   }
@@ -322,6 +332,33 @@ export type Answer = {
 export interface Interviewer {
   ask(question: Question): Promise<Answer>;
 }
+
+// ---------------------------------------------------------------------------
+// Human-gate context keys
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Review findings accumulation
+// ---------------------------------------------------------------------------
+
+/** A single review finding captured from a review or tool stage. */
+export type ReviewFinding = {
+  /** The stage node ID that produced this finding. */
+  stageId: string;
+  /** The iteration number (1-indexed) — increments each time the stage runs. */
+  iteration: number;
+  /** Status the stage produced (fail, partial_success). */
+  status: StageStatus;
+  /** The failure reason extracted from the outcome. */
+  failureReason: string;
+  /** Full response text containing the detailed findings. */
+  response: string;
+  /** ISO timestamp when the finding was recorded. */
+  timestamp: string;
+};
+
+/** Well-known context key for accumulated review findings. */
+export const REVIEW_FINDINGS_KEY = "review.findings" as const;
 
 // ---------------------------------------------------------------------------
 // Human-gate context keys
