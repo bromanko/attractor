@@ -24,7 +24,9 @@ workflow "Planning" {
     retry max_attempts=2 backoff="exponential"
   }
 
-  stage "write_plan" kind="llm" model="gpt-5.3-codex" provider="openai-codex" prompt="Write the final approved plan to ./docs/plans/<slug>.md with frontmatter and decision log. Commit with message: docs: add plan for <slug>."
+  stage "write_plan" kind="llm" model="gpt-5.3-codex" provider="openai-codex" auto_status=true prompt="Write the final approved plan to ./docs/plans/<slug>.md with frontmatter and decision log. Commit with message: docs: add plan for <slug>.\n\nAfter writing and committing successfully, output [STATUS: success].\nIf anything fails (missing workspace/path, file write failure, commit failure, or verification concern), output [STATUS: fail] and [FAILURE_REASON: ...]." {
+    retry max_attempts=2 backoff="exponential"
+  }
 
   stage "verify_write_plan" kind="tool" command="bash -lc 'set -euo pipefail; jj log -r \"@-\" --no-graph -T \"description\" --limit 1 | grep -Eq \"^docs: add plan for .+\"; jj show \"@-\" --name-only | grep -Eq \"^docs/plans/.+\\.md$\"'"
 

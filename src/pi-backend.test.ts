@@ -188,6 +188,26 @@ describe("defaultParseOutcome", () => {
     expect(outcome.status).toBe("partial_success");
   });
 
+  it("fails auto_status=true node when status marker is missing", () => {
+    const outcome = defaultParseOutcome(
+      "No status marker here.",
+      reviewNode,
+      ctx,
+    );
+    expect(outcome.status).toBe("fail");
+    expect(outcome.failure_reason).toBe("Missing [STATUS: ...] marker in response");
+  });
+
+  it("fails auto_status=true node with empty response", () => {
+    const outcome = defaultParseOutcome(
+      "",
+      reviewNode,
+      ctx,
+    );
+    expect(outcome.status).toBe("fail");
+    expect(outcome.failure_reason).toBe("Missing [STATUS: ...] marker in response");
+  });
+
   // --- codergen nodes (box shape) ignore status markers ---
 
   it("ignores [STATUS: fail] marker for codergen node (box shape)", () => {

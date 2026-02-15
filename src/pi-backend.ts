@@ -133,8 +133,14 @@ export function defaultParseOutcome(
   const statusMatch = text.match(
     /\[STATUS:\s*(success|fail|partial_success|retry)\]/i,
   );
-  if (statusMatch && shouldParseStatusMarkers(node)) {
+  const shouldParseStatus = shouldParseStatusMarkers(node);
+  const requiresStatusMarker = node.attrs.auto_status === true || node.attrs.auto_status === "true";
+
+  if (statusMatch && shouldParseStatus) {
     outcome.status = statusMatch[1].toLowerCase() as Outcome["status"];
+  } else if (requiresStatusMarker) {
+    outcome.status = "fail";
+    outcome.failure_reason = "Missing [STATUS: ...] marker in response";
   }
 
   // Preferred label
@@ -150,12 +156,12 @@ export function defaultParseOutcome(
   }
 
   // Failure reason — only parsed when status markers are honoured.
-  if (shouldParseStatusMarkers(node)) {
+  if (shouldParseStatus) {
     const failMatch = text.match(/\[FAILURE_REASON:\s*(.+?)\]/i);
     if (failMatch) {
       outcome.failure_reason = failMatch[1].trim();
-    } else if (outcome.status === "fail") {
-      outcome.failure_reason = text.slice(0, 200);
+    } else if (outcome.status === "fail" && !outcome.failure_reason) {
+      outcome.failure_reason = text.slice(0, 200) || "Stage failed with no response";
     }
   }
 
