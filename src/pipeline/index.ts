@@ -76,6 +76,22 @@ export { validateWorkflow, validateWorkflowOrRaise } from "./workflow-validator.
 export { parseWorkflowKdl } from "./workflow-kdl-parser.js";
 export { parseWorkflowDefinition, workflowToGraph, parseWorkflowToGraph } from "./workflow-loader.js";
 
+// Workflow resolution/discovery
+export {
+  discoverWorkflows,
+  resolveWorkflowPath,
+  WorkflowResolutionError,
+} from "./workflow-resolution.js";
+export type {
+  WorkflowEntry,
+  WorkflowParser,
+  DiscoverOptions,
+  DiscoverResult,
+  ResolveOptions,
+  ResolveResult,
+  LocationTier,
+} from "./workflow-resolution.js";
+
 // DOT serialization
 export { graphToDot } from "./graph-to-dot.js";
 

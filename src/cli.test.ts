@@ -9,6 +9,14 @@ let currentEvents: Array<{ kind: string; data: Record<string, unknown> }> = [];
 let runPipelineImpl: ((config: any) => Promise<any>) | undefined;
 
 vi.mock("./pipeline/index.js", () => {
+  class WorkflowResolutionError extends Error {
+    searchedLocations: string[];
+    constructor(message: string, searchedLocations: string[]) {
+      super(message);
+      this.name = "WorkflowResolutionError";
+      this.searchedLocations = searchedLocations;
+    }
+  }
   return {
     parseWorkflowKdl: vi.fn(() => ({ version: 2, name: "wf", start: "start", stages: [] })),
     workflowToGraph: vi.fn(() => currentGraph),
@@ -24,6 +32,9 @@ vi.mock("./pipeline/index.js", () => {
       constructor(_: unknown) {}
     },
     AutoApproveInterviewer: class AutoApproveInterviewer {},
+    resolveWorkflowPath: vi.fn(async (opts: any) => ({ path: opts.ref, warnings: [] })),
+    WorkflowResolutionError,
+    graphToDot: vi.fn(() => 'digraph "test" {}'),
   };
 });
 

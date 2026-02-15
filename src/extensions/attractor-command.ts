@@ -2,11 +2,15 @@
  * attractor-command.ts — Argument parsing and workflow resolution for /attractor.
  *
  * Parses subcommands (`run`, `validate`) and their flags, and resolves
- * workflow file paths using the local `.attractor/workflows/` convention.
+ * workflow file paths using the shared workflow-resolution module.
  */
 
-import { existsSync } from "node:fs";
-import { resolve, extname } from "node:path";
+import {
+  discoverWorkflows as discoverWorkflowsShared,
+  resolveWorkflowPath as resolveWorkflowPathShared,
+  WorkflowResolutionError,
+} from "../pipeline/workflow-resolution.js";
+import type { WorkflowEntry, WorkflowParser } from "../pipeline/workflow-resolution.js";
 
 const VALID_SHOW_FORMATS: ReadonlySet<string> = new Set(["ascii", "boxart", "dot"]);
 const VALID_TOOL_MODES: ReadonlySet<string> = new Set(["none", "read-only", "coding"]);
@@ -20,6 +24,8 @@ export type Subcommand = "run" | "validate" | "show";
 export type ParsedRunCommand = {
   subcommand: "run";
   workflowPath?: string;
+  /** Warnings from workflow resolution (e.g. shadowed duplicates). */
+  warnings: string[];
   resume: boolean;
   approveAll: boolean;
   logs?: string;
@@ -30,6 +36,8 @@ export type ParsedRunCommand = {
 export type ParsedValidateCommand = {
   subcommand: "validate";
   workflowPath?: string;
+  /** Warnings from workflow resolution (e.g. shadowed duplicates). */
+  warnings: string[];
 };
 
 export type ShowFormat = "ascii" | "boxart" | "dot";
@@ -37,6 +45,8 @@ export type ShowFormat = "ascii" | "boxart" | "dot";
 export type ParsedShowCommand = {
   subcommand: "show";
   workflowPath: string;
+  /** Warnings from workflow resolution (e.g. shadowed duplicates). */
+  warnings: string[];
   format?: ShowFormat;
 };
 
@@ -80,49 +90,47 @@ export function usageText(): string {
 }
 
 // ---------------------------------------------------------------------------
-// Workflow resolution
+// Workflow resolution — delegates to shared module
 // ---------------------------------------------------------------------------
+
+/** Result of workflow resolution including warnings for shadowed duplicates. */
+export type ResolvedWorkflow = {
+  path: string;
+  warnings: string[];
+};
 
 /**
  * Resolve a workflow reference to an absolute file path.
  *
- * Resolution order:
- * 1. If the value is an existing file path (absolute or relative), use it directly.
- * 2. If it looks like a bare name (no path separators, no extension),
- *    look in `.attractor/workflows/<name>.awf.kdl`.
- * 3. Return an error with actionable guidance.
+ * Delegates to the shared workflow-resolution module and converts
+ * WorkflowResolutionError into CommandParseError for backward compatibility
+ * with the command parser's error handling.
+ *
+ * Returns both the resolved path and any warnings (e.g. shadowed duplicates).
  */
-export function resolveWorkflowPath(
+export async function resolveWorkflowPath(
   cwd: string,
   ref: string,
-): string {
-  // 1. Direct file reference
-  const direct = resolve(cwd, ref);
-  if (existsSync(direct)) return direct;
-
-  // 2. Bare name → .attractor/workflows/<name>.awf.kdl
-  const isBare = !ref.includes("/") && !ref.includes("\\") && extname(ref) === "";
-  if (isBare) {
-    const workflowPath = resolve(cwd, ".attractor", "workflows", `${ref}.awf.kdl`);
-    if (existsSync(workflowPath)) return workflowPath;
-
-    throw new CommandParseError(
-      `Workflow "${ref}" not found.\n` +
-      `Searched:\n` +
-      `  ${direct}\n` +
-      `  ${workflowPath}\n` +
-      `Place workflow files in .attractor/workflows/ or provide a full path.`,
-    );
+  parseKdl?: WorkflowParser,
+): Promise<ResolvedWorkflow> {
+  try {
+    const parser = parseKdl ?? minimalParser;
+    const result = await resolveWorkflowPathShared({
+      cwd,
+      ref,
+      parseKdl: parser,
+    });
+    return { path: result.path, warnings: result.warnings };
+  } catch (err) {
+    if (err instanceof WorkflowResolutionError) {
+      throw new CommandParseError(err.message);
+    }
+    throw err;
   }
-
-  throw new CommandParseError(
-    `Workflow file not found: ${direct}\n` +
-    `Provide a valid path to a .awf.kdl workflow file.`,
-  );
 }
 
 // ---------------------------------------------------------------------------
-// Workflow discovery
+// Workflow discovery — delegates to shared module
 // ---------------------------------------------------------------------------
 
 export type WorkflowCatalogEntry = {
@@ -133,49 +141,40 @@ export type WorkflowCatalogEntry = {
 };
 
 /**
- * Discover workflow files from `.attractor/workflows/*.awf.kdl` in the given
- * directory. Returns a sorted list of catalog entries. Files that fail to parse
- * are skipped (returned as warnings).
+ * Discover workflow files from known Attractor locations.
+ *
+ * Delegates to the shared workflow-resolution module and maps the result
+ * to the existing WorkflowCatalogEntry format for backward compatibility.
  */
 export async function discoverWorkflows(
   cwd: string,
   parseKdl: (source: string) => { name: string; description?: string; stages: unknown[] },
 ): Promise<{ entries: WorkflowCatalogEntry[]; warnings: string[] }> {
-  const { readdir, readFile } = await import("node:fs/promises");
-  const { resolve: resolvePath, join: joinPath } = await import("node:path");
+  const result = await discoverWorkflowsShared({ cwd, parseKdl });
 
-  const workflowDir = resolvePath(cwd, ".attractor", "workflows");
-  const warnings: string[] = [];
-  const entries: WorkflowCatalogEntry[] = [];
+  const entries: WorkflowCatalogEntry[] = result.entries.map((e: WorkflowEntry) => ({
+    name: e.name,
+    path: e.path,
+    description: e.description,
+    stageCount: e.stageCount,
+  }));
 
-  let files: string[];
-  try {
-    files = await readdir(workflowDir);
-  } catch {
-    return { entries: [], warnings: [] };
-  }
-
-  const kdlFiles = files.filter((f) => f.endsWith(".awf.kdl")).sort();
-
-  for (const file of kdlFiles) {
-    const filePath = joinPath(workflowDir, file);
-    try {
-      const source = await readFile(filePath, "utf-8");
-      const workflow = parseKdl(source);
-      entries.push({
-        name: workflow.name,
-        path: filePath,
-        description: workflow.description,
-        stageCount: workflow.stages.length,
-      });
-    } catch (err) {
-      warnings.push(`Failed to parse ${file}: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-
-  entries.sort((a, b) => a.name.localeCompare(b.name));
-  return { entries, warnings };
+  return { entries, warnings: result.warnings };
 }
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimal parser for resolution — only needs to satisfy the WorkflowParser
+ * signature. Used when callers don't provide a real parser. Bare-name
+ * resolution matches by filename stem, so the parsed content is not used.
+ */
+const minimalParser: WorkflowParser = (_source: string) => ({
+  name: "unknown",
+  stages: [],
+});
 
 // ---------------------------------------------------------------------------
 // Argument tokenizer
@@ -216,8 +215,13 @@ export function tokenize(input: string): string[] {
  *
  * @param raw  The argument string after `/attractor `, e.g. `run my-workflow --goal "foo"`
  * @param cwd  Working directory for workflow resolution.
+ * @param parseKdl  Optional KDL parser for bare-name resolution.
  */
-export function parseCommand(raw: string, cwd: string): ParsedCommand {
+export async function parseCommand(
+  raw: string,
+  cwd: string,
+  parseKdl?: WorkflowParser,
+): Promise<ParsedCommand> {
   const tokens = tokenize(raw.trim());
 
   if (tokens.length === 0) {
@@ -257,10 +261,14 @@ export function parseCommand(raw: string, cwd: string): ParsedCommand {
     }
   }
 
-  const workflowPath = workflowRef ? resolveWorkflowPath(cwd, workflowRef) : undefined;
+  const resolved = workflowRef
+    ? await resolveWorkflowPath(cwd, workflowRef, parseKdl)
+    : undefined;
+  const workflowPath = resolved?.path;
+  const warnings = resolved?.warnings ?? [];
 
   if (subcommand === "validate") {
-    return { subcommand: "validate", workflowPath };
+    return { subcommand: "validate", workflowPath, warnings };
   }
 
   if (subcommand === "show") {
@@ -277,6 +285,7 @@ export function parseCommand(raw: string, cwd: string): ParsedCommand {
     return {
       subcommand: "show",
       workflowPath,
+      warnings,
       format: typeof flags.format === "string" ? flags.format as ShowFormat : undefined,
     };
   }
@@ -291,6 +300,7 @@ export function parseCommand(raw: string, cwd: string): ParsedCommand {
   return {
     subcommand: "run",
     workflowPath,
+    warnings,
     resume: flags.resume === true,
     approveAll: flags["approve-all"] === true,
     logs: typeof flags.logs === "string" ? flags.logs : undefined,

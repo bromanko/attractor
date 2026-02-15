@@ -14,6 +14,8 @@ import { pathToFileURL } from "node:url";
 import { existsSync } from "node:fs";
 
 import {
+  resolveWorkflowPath as resolveWorkflowPathFromCatalog,
+  WorkflowResolutionError,
   runPipeline,
   PiBackend,
   AutoApproveInterviewer,
@@ -542,41 +544,65 @@ function cmdListModels(args: Record<string, string | boolean>): void {
 // Main
 // ---------------------------------------------------------------------------
 
+/**
+ * Resolve a CLI workflow file reference using the shared resolution module.
+ * Handles bare names, relative paths, and absolute paths. Prints warnings
+ * for shadowed duplicates.
+ */
+async function resolveCliWorkflow(ref: string): Promise<string> {
+  const result = await resolveWorkflowPathFromCatalog({
+    cwd: process.cwd(),
+    ref,
+    parseKdl: parseWorkflowKdl,
+  });
+  for (const warning of result.warnings) {
+    console.warn(`⚠️  ${warning}`);
+  }
+  return result.path;
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
+  const command = args._command as string | undefined;
 
-  switch (args._command) {
-    case "run": {
-      if (!args._file) {
-        console.error("Error: run requires a workflow file path (.awf.kdl preferred)");
-        usage();
-      }
-      await cmdRun(args._file as string, args);
-      break;
-    }
-    case "validate": {
-      if (!args._file) {
-        console.error("Error: validate requires a workflow file path (.awf.kdl preferred)");
-        usage();
-      }
-      await cmdValidate(args._file as string);
-      break;
-    }
-    case "show": {
-      if (!args._file) {
-        console.error("Error: show requires a workflow file path (.awf.kdl)");
-        usage();
-      }
-      await cmdShow(args._file as string, args);
-      break;
-    }
-    case "list-models": {
-      cmdListModels(args);
-      break;
-    }
-    default:
+  // Commands that require a workflow file
+  if (command === "run" || command === "validate" || command === "show") {
+    if (!args._file) {
+      console.error(`Error: ${command} requires a workflow file path (.awf.kdl preferred)`);
       usage();
+    }
+
+    let filePath: string;
+    try {
+      filePath = await resolveCliWorkflow(args._file as string);
+    } catch (err) {
+      if (err instanceof WorkflowResolutionError) {
+        console.error(`Error: ${err.message}`);
+        process.exit(1);
+      }
+      throw err;
+    }
+
+    switch (command) {
+      case "run":
+        await cmdRun(filePath, args);
+        break;
+      case "validate":
+        await cmdValidate(filePath);
+        break;
+      case "show":
+        await cmdShow(filePath, args);
+        break;
+    }
+    return;
   }
+
+  if (command === "list-models") {
+    cmdListModels(args);
+    return;
+  }
+
+  usage();
 }
 
 const isDirectRun = process.argv[1] != null

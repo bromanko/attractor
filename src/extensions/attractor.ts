@@ -115,13 +115,18 @@ export default function attractorExtension(pi: ExtensionAPI): void {
 
       let parsed;
       try {
-        parsed = parseCommand(args, ctx.cwd);
+        parsed = await parseCommand(args, ctx.cwd);
       } catch (err) {
         if (err instanceof CommandParseError) {
           ctx.ui.notify(err.message, "error");
           return;
         }
         throw err;
+      }
+
+      // Surface resolution warnings (e.g. shadowed duplicates)
+      for (const warning of parsed.warnings) {
+        ctx.ui.notify(warning, "warning");
       }
 
       switch (parsed.subcommand) {

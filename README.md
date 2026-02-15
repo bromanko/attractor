@@ -151,6 +151,7 @@ src/
 │   ├── workflow-types.ts   KDL workflow definition types
 │   ├── workflow-kdl-parser.ts  KDL workflow parser
 │   ├── workflow-loader.ts  Workflow-to-graph conversion
+│   ├── workflow-resolution.ts  Shared workflow discovery & resolution
 │   ├── workflow-validator.ts   Workflow-level validation
 │   ├── workflow-expr.ts    Workflow expression evaluator
 │   ├── validator.ts        Graph-level lint rules
@@ -180,8 +181,9 @@ npm install -g attractor   # or use npx attractor
 ### Commands
 
 ```sh
-# Run a pipeline
+# Run a pipeline (path or bare name)
 attractor run pipeline.awf.kdl [options]
+attractor run deploy              # resolves to .attractor/workflows/deploy.awf.kdl
 
 # Validate a workflow graph
 attractor validate pipeline.awf.kdl
@@ -252,12 +254,17 @@ Then reload pi (`/reload`) to pick up the extension.
 
 ### Workflow Resolution
 
-The extension resolves workflow references in order:
+Both the CLI and extension use a shared resolution module. Workflow references are resolved in order:
 
-1. Direct file path (absolute or relative to cwd)
-2. Bare name → `.attractor/workflows/<name>.awf.kdl`
+1. **Direct file path** — absolute or relative to cwd
+2. **Bare name** — resolved by filename stem from known Attractor locations:
+   - `<cwd>/.attractor/workflows/<name>.awf.kdl` (project-local)
+   - `<repo-root>/.attractor/workflows/<name>.awf.kdl` (repo-level, when cwd is a subdir)
+   - `~/.attractor/workflows/<name>.awf.kdl` (global user-level)
 
-So `/attractor run deploy` will look for `.attractor/workflows/deploy.awf.kdl`.
+Project-local workflows take precedence over repo-root, which takes precedence over global. When duplicate filenames exist across locations, the higher-precedence copy wins and a warning is emitted.
+
+So `/attractor run deploy` or `attractor run deploy` will search these locations for `deploy.awf.kdl`.
 
 ### Run Options
 

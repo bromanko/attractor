@@ -47,7 +47,9 @@ describe("resolveWorkflowPath", () => {
   it("resolves a direct file path", async () => {
     const workflowFile = join(tempDir, "pipeline.awf.kdl");
     await writeFile(workflowFile, 'workflow "x" { version 2 start "exit" stage "exit" kind="exit" }');
-    expect(resolveWorkflowPath(tempDir, "pipeline.awf.kdl")).toBe(workflowFile);
+    const result = await resolveWorkflowPath(tempDir, "pipeline.awf.kdl");
+    expect(result.path).toBe(workflowFile);
+    expect(result.warnings).toEqual([]);
   });
 
   it("resolves a bare name to .attractor/workflows/<name>.awf.kdl first", async () => {
@@ -56,7 +58,8 @@ describe("resolveWorkflowPath", () => {
     const kdlFile = join(wfDir, "deploy.awf.kdl");
     await writeFile(kdlFile, "workflow \"x\" { version 2 start \"exit\" stage \"exit\" kind=\"exit\" }");
 
-    expect(resolveWorkflowPath(tempDir, "deploy")).toBe(kdlFile);
+    const result = await resolveWorkflowPath(tempDir, "deploy");
+    expect(result.path).toBe(kdlFile);
   });
 
   it("resolves bare name from .attractor/workflows/<name>.awf.kdl", async () => {
@@ -65,16 +68,17 @@ describe("resolveWorkflowPath", () => {
     const workflowFile = join(wfDir, "deploy.awf.kdl");
     await writeFile(workflowFile, 'workflow "x" { version 2 start "exit" stage "exit" kind="exit" }');
 
-    expect(resolveWorkflowPath(tempDir, "deploy")).toBe(workflowFile);
+    const result = await resolveWorkflowPath(tempDir, "deploy");
+    expect(result.path).toBe(workflowFile);
   });
 
-  it("throws CommandParseError for missing bare name", () => {
-    expect(() => resolveWorkflowPath(tempDir, "nope")).toThrow(CommandParseError);
-    expect(() => resolveWorkflowPath(tempDir, "nope")).toThrow(/not found/);
+  it("throws CommandParseError for missing bare name", async () => {
+    await expect(resolveWorkflowPath(tempDir, "nope")).rejects.toThrow(CommandParseError);
+    await expect(resolveWorkflowPath(tempDir, "nope")).rejects.toThrow(/not found/);
   });
 
-  it("throws CommandParseError for missing file path", () => {
-    expect(() => resolveWorkflowPath(tempDir, "missing.awf.kdl")).toThrow(CommandParseError);
+  it("throws CommandParseError for missing file path", async () => {
+    await expect(resolveWorkflowPath(tempDir, "missing.awf.kdl")).rejects.toThrow(CommandParseError);
   });
 });
 
@@ -90,14 +94,14 @@ describe("parseCommand", () => {
     await rm(tempDir, { recursive: true, force: true });
   });
 
-  it("parses validate subcommand", () => {
-    const parsed = parseCommand("validate test.awf.kdl", tempDir);
+  it("parses validate subcommand", async () => {
+    const parsed = await parseCommand("validate test.awf.kdl", tempDir);
     expect(parsed.subcommand).toBe("validate");
     expect(parsed.workflowPath).toBe(join(tempDir, "test.awf.kdl"));
   });
 
-  it("parses run subcommand with flags", () => {
-    const parsed = parseCommand(
+  it("parses run subcommand with flags", async () => {
+    const parsed = await parseCommand(
       'run test.awf.kdl --approve-all --dry-run',
       tempDir,
     );
@@ -109,59 +113,59 @@ describe("parseCommand", () => {
     }
   });
 
-  it("parses run with --resume flag", () => {
-    const parsed = parseCommand("run test.awf.kdl --resume", tempDir);
+  it("parses run with --resume flag", async () => {
+    const parsed = await parseCommand("run test.awf.kdl --resume", tempDir);
     if (parsed.subcommand === "run") {
       expect(parsed.resume).toBe(true);
     }
   });
 
-  it("parses run with --logs and --tools", () => {
-    const parsed = parseCommand("run test.awf.kdl --logs /tmp/logs --tools read-only", tempDir);
+  it("parses run with --logs and --tools", async () => {
+    const parsed = await parseCommand("run test.awf.kdl --logs /tmp/logs --tools read-only", tempDir);
     if (parsed.subcommand === "run") {
       expect(parsed.logs).toBe("/tmp/logs");
       expect(parsed.tools).toBe("read-only");
     }
   });
 
-  it("throws on empty input", () => {
-    expect(() => parseCommand("", tempDir)).toThrow(CommandParseError);
+  it("throws on empty input", async () => {
+    await expect(parseCommand("", tempDir)).rejects.toThrow(CommandParseError);
   });
 
-  it("throws on unknown subcommand", () => {
-    expect(() => parseCommand("deploy test.awf.kdl", tempDir)).toThrow(CommandParseError);
-    expect(() => parseCommand("deploy test.awf.kdl", tempDir)).toThrow(/Unknown subcommand/);
+  it("throws on unknown subcommand", async () => {
+    await expect(parseCommand("deploy test.awf.kdl", tempDir)).rejects.toThrow(CommandParseError);
+    await expect(parseCommand("deploy test.awf.kdl", tempDir)).rejects.toThrow(/Unknown subcommand/);
   });
 
-  it("allows missing workflow for run (guided mode)", () => {
-    const parsed = parseCommand("run", tempDir);
+  it("allows missing workflow for run (guided mode)", async () => {
+    const parsed = await parseCommand("run", tempDir);
     expect(parsed.subcommand).toBe("run");
     if (parsed.subcommand === "run") {
       expect(parsed.workflowPath).toBeUndefined();
     }
   });
 
-  it("allows missing workflow for validate (guided mode)", () => {
-    const parsed = parseCommand("validate", tempDir);
+  it("allows missing workflow for validate (guided mode)", async () => {
+    const parsed = await parseCommand("validate", tempDir);
     expect(parsed.subcommand).toBe("validate");
     if (parsed.subcommand === "validate") {
       expect(parsed.workflowPath).toBeUndefined();
     }
   });
 
-  it("throws on missing workflow for show", () => {
-    expect(() => parseCommand("show", tempDir)).toThrow(CommandParseError);
-    expect(() => parseCommand("show", tempDir)).toThrow(/Missing workflow/);
+  it("throws on missing workflow for show", async () => {
+    await expect(parseCommand("show", tempDir)).rejects.toThrow(CommandParseError);
+    await expect(parseCommand("show", tempDir)).rejects.toThrow(/Missing workflow/);
   });
 
-  it("throws on invalid --tools value", () => {
-    expect(() => parseCommand("run test.awf.kdl --tools garbage", tempDir)).toThrow(CommandParseError);
-    expect(() => parseCommand("run test.awf.kdl --tools garbage", tempDir)).toThrow(/Invalid --tools value/);
+  it("throws on invalid --tools value", async () => {
+    await expect(parseCommand("run test.awf.kdl --tools garbage", tempDir)).rejects.toThrow(CommandParseError);
+    await expect(parseCommand("run test.awf.kdl --tools garbage", tempDir)).rejects.toThrow(/Invalid --tools value/);
   });
 
-  it("accepts valid --tools values", () => {
+  it("accepts valid --tools values", async () => {
     for (const mode of ["none", "read-only", "coding"]) {
-      const parsed = parseCommand(`run test.awf.kdl --tools ${mode}`, tempDir);
+      const parsed = await parseCommand(`run test.awf.kdl --tools ${mode}`, tempDir);
       if (parsed.subcommand === "run") {
         expect(parsed.tools).toBe(mode);
       }
@@ -181,42 +185,42 @@ describe("parseCommand — show", () => {
     await rm(tempDir, { recursive: true, force: true });
   });
 
-  it("parses show subcommand", () => {
-    const parsed = parseCommand("show test.awf.kdl", tempDir);
+  it("parses show subcommand", async () => {
+    const parsed = await parseCommand("show test.awf.kdl", tempDir);
     expect(parsed.subcommand).toBe("show");
     expect(parsed.workflowPath).toBe(join(tempDir, "test.awf.kdl"));
   });
 
-  it("parses show with --format flag", () => {
-    const parsed = parseCommand("show test.awf.kdl --format ascii", tempDir);
+  it("parses show with --format flag", async () => {
+    const parsed = await parseCommand("show test.awf.kdl --format ascii", tempDir);
     expect(parsed.subcommand).toBe("show");
     assert(parsed.subcommand === "show");
     expect(parsed.format).toBe("ascii");
   });
 
-  it("accepts all valid format values", () => {
+  it("accepts all valid format values", async () => {
     for (const fmt of ["ascii", "boxart", "dot"]) {
-      const parsed = parseCommand(`show test.awf.kdl --format ${fmt}`, tempDir);
+      const parsed = await parseCommand(`show test.awf.kdl --format ${fmt}`, tempDir);
       assert(parsed.subcommand === "show");
       expect(parsed.format).toBe(fmt);
     }
   });
 
-  it("defaults format to undefined when not specified", () => {
-    const parsed = parseCommand("show test.awf.kdl", tempDir);
+  it("defaults format to undefined when not specified", async () => {
+    const parsed = await parseCommand("show test.awf.kdl", tempDir);
     assert(parsed.subcommand === "show");
     expect(parsed.format).toBeUndefined();
   });
 
-  it("treats bare --format (no value) as unset", () => {
-    const parsed = parseCommand("show test.awf.kdl --format", tempDir);
+  it("treats bare --format (no value) as unset", async () => {
+    const parsed = await parseCommand("show test.awf.kdl --format", tempDir);
     assert(parsed.subcommand === "show");
     expect(parsed.format).toBeUndefined();
   });
 
-  it("throws on invalid --format value", () => {
-    expect(() => parseCommand("show test.awf.kdl --format png", tempDir)).toThrow(CommandParseError);
-    expect(() => parseCommand("show test.awf.kdl --format png", tempDir)).toThrow(/Invalid --format value/);
+  it("throws on invalid --format value", async () => {
+    await expect(parseCommand("show test.awf.kdl --format png", tempDir)).rejects.toThrow(CommandParseError);
+    await expect(parseCommand("show test.awf.kdl --format png", tempDir)).rejects.toThrow(/Invalid --format value/);
   });
 });
 

@@ -88,13 +88,17 @@ Visualize a pipeline graph as ASCII art, box art, or DOT notation.
 
 ## Workflow Discovery
 
-When you provide a bare name (no path separator, no extension), the extension looks for the workflow in:
+Both the CLI and extension share the same resolution module. When you provide a bare name (no path separator, no extension), it is resolved by filename stem from these locations in precedence order:
 
-1. `.attractor/workflows/<name>.awf.kdl` in the current directory
+1. `<cwd>/.attractor/workflows/<name>.awf.kdl` (project-local)
+2. `<repo-root>/.attractor/workflows/<name>.awf.kdl` (repo-level, when cwd differs)
+3. `~/.attractor/workflows/<name>.awf.kdl` (global user-level)
 
 When you provide a path (relative or absolute), it's used directly.
 
-**Interactive picker scope:** The workflow picker currently discovers workflows from `.attractor/workflows/*.awf.kdl` only. Files that fail to parse are skipped with a warning.
+**Precedence:** Project-local > repo-root > global. If the same filename exists in multiple locations, the highest-precedence copy wins and a warning is emitted for shadowed duplicates.
+
+**Interactive picker scope:** The workflow picker discovers workflows from all known locations (project, repo, global) and deduplicates by filename stem. Files that fail to parse are skipped with a warning.
 
 ## Workflow Description
 
