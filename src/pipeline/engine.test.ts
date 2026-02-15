@@ -5,8 +5,8 @@ import { mkdtemp, readFile, access } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { runPipeline } from "./engine.js";
 import { graph } from "./test-graph-builder.js";
-import type { CodergenBackend, Outcome, PipelineEvent, Interviewer, Question, Answer, Option } from "./types.js";
-import { Context } from "./types.js";
+import type { CodergenBackend, Outcome, PipelineEvent, Interviewer, Question, Answer, Option, ReviewFinding } from "./types.js";
+import { Context, REVIEW_FINDINGS_KEY } from "./types.js";
 
 async function tempDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "attractor-test-"));
@@ -1507,6 +1507,323 @@ describe("Pipeline Usage Tracking", () => {
     expect(result.usageSummary).toBeDefined();
     expect(result.usageSummary!.totals.cost).toBe(0.05);
     expect(result.usageSummary!.totals.input_tokens).toBe(0);
+  });
+});
+
+// ===========================================================================
+// Context.appendToArray
+// ===========================================================================
+
+describe("Context.appendToArray", () => {
+  it("creates array if absent", () => {
+    const ctx = new Context();
+    ctx.appendToArray("items", "a");
+    expect(ctx.get("items")).toEqual(["a"]);
+  });
+
+  it("appends to existing array", () => {
+    const ctx = new Context();
+    ctx.appendToArray("items", "a");
+    ctx.appendToArray("items", "b");
+    expect(ctx.get("items")).toEqual(["a", "b"]);
+  });
+
+  it("replaces non-array value with new array", () => {
+    const ctx = new Context();
+    ctx.set("items", "not-an-array");
+    ctx.appendToArray("items", "a");
+    expect(ctx.get("items")).toEqual(["a"]);
+  });
+});
+
+// ===========================================================================
+// Review findings accumulation
+// ===========================================================================
+
+describe("Review findings accumulation", () => {
+  it("accumulates findings for auto_status=true nodes that fail", async () => {
+    const g = graph({
+      attrs: { goal: "Test findings" },
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "rev1", shape: "box", auto_status: true },
+        { id: "gate", shape: "diamond" },
+        { id: "good", shape: "box" },
+      ],
+      edges: [
+        { from: "start", to: "rev1" },
+        { from: "rev1", to: "gate" },
+        { from: "gate", to: "good", condition: "outcome=success" },
+        { from: "gate", to: "exit", condition: "outcome!=success" },
+      ],
+    });
+
+    const backend: CodergenBackend = {
+      async run(node) {
+        if (node.id === "rev1") {
+          return {
+            status: "fail",
+            failure_reason: "code quality issues",
+            context_updates: {
+              "rev1.response": "Found issues with error handling",
+              "rev1._full_response": "Full review text about error handling issues",
+            },
+          } as Outcome;
+        }
+        return `Done: ${node.id}`;
+      },
+    };
+
+    let capturedFindings: unknown;
+    const logsRoot = await tempDir();
+    const result = await runPipeline({
+      graph: g,
+      logsRoot,
+      backend,
+      onEvent: (e) => {
+        if (e.kind === "pipeline_completed" || e.kind === "pipeline_failed") {
+          // Read checkpoint to check context
+        }
+      },
+    });
+
+    // Read checkpoint to verify findings were stored
+    const cpJson = await readFile(join(logsRoot, "checkpoint.json"), "utf-8");
+    const checkpoint = JSON.parse(cpJson);
+    const findings = checkpoint.context_values[REVIEW_FINDINGS_KEY] as ReviewFinding[];
+    expect(findings).toBeDefined();
+    expect(findings.length).toBe(1);
+    expect(findings[0].stageId).toBe("rev1");
+    expect(findings[0].status).toBe("fail");
+    expect(findings[0].failureReason).toBe("code quality issues");
+    expect(findings[0].response).toContain("Full review text");
+  });
+
+  it("clears findings for a stage when it passes on re-run", async () => {
+    let rev1Calls = 0;
+    const backend: CodergenBackend = {
+      async run(node) {
+        if (node.id === "rev1") {
+          rev1Calls++;
+          if (rev1Calls === 1) {
+            return {
+              status: "fail",
+              failure_reason: "issues found",
+              context_updates: {
+                "rev1.response": "Found problems",
+                "rev1._full_response": "Full text of problems",
+              },
+            } as Outcome;
+          }
+          // Second call: succeeds
+          return {
+            status: "success",
+            context_updates: {
+              "rev1.response": "All good now",
+              "rev1._full_response": "All good now - full",
+            },
+          } as Outcome;
+        }
+        return `Done: ${node.id}`;
+      },
+    };
+
+    const g = graph({
+      attrs: { goal: "Test clearing" },
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "rev1", shape: "box", auto_status: true },
+        { id: "gate", shape: "diamond" },
+        { id: "fix", shape: "box" },
+      ],
+      edges: [
+        { from: "start", to: "rev1" },
+        { from: "rev1", to: "gate" },
+        { from: "gate", to: "exit", condition: "outcome=success" },
+        { from: "gate", to: "fix", condition: "outcome!=success" },
+        { from: "fix", to: "rev1" },
+      ],
+    });
+
+    const logsRoot = await tempDir();
+    const result = await runPipeline({ graph: g, logsRoot, backend });
+
+    expect(result.status).toBe("success");
+
+    // Read final checkpoint to verify findings were cleared
+    const cpJson = await readFile(join(logsRoot, "checkpoint.json"), "utf-8");
+    const checkpoint = JSON.parse(cpJson);
+    const findings = checkpoint.context_values[REVIEW_FINDINGS_KEY] as ReviewFinding[];
+    // Findings should be empty because rev1 passed on second run
+    expect(findings).toEqual([]);
+  });
+
+  it("accumulates findings for tool stages that fail", async () => {
+    const g = graph({
+      attrs: { goal: "Test tool findings" },
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "check", shape: "parallelogram", tool_command: "echo 'compile error' >&2 && exit 1" },
+        { id: "gate", shape: "diamond" },
+      ],
+      edges: [
+        { from: "start", to: "check" },
+        { from: "check", to: "gate" },
+        { from: "gate", to: "exit" },
+      ],
+    });
+
+    const logsRoot = await tempDir();
+    const result = await runPipeline({ graph: g, logsRoot });
+
+    // Pipeline status depends on edge routing, but we can check findings in checkpoint
+    const cpJson = await readFile(join(logsRoot, "checkpoint.json"), "utf-8");
+    const checkpoint = JSON.parse(cpJson);
+    const findings = checkpoint.context_values[REVIEW_FINDINGS_KEY] as ReviewFinding[];
+    expect(findings).toBeDefined();
+    expect(findings.length).toBe(1);
+    expect(findings[0].stageId).toBe("check");
+    expect(findings[0].status).toBe("fail");
+    expect(findings[0].failureReason).toBeTruthy();
+  });
+
+  it("does not accumulate findings for regular codergen nodes", async () => {
+    const g = graph({
+      attrs: { goal: "Test no findings for codergen" },
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "impl", shape: "box" },
+        { id: "gate", shape: "diamond" },
+      ],
+      edges: [
+        { from: "start", to: "impl" },
+        { from: "impl", to: "gate" },
+        { from: "gate", to: "exit" },
+      ],
+    });
+
+    const failBackend: CodergenBackend = {
+      async run(node) {
+        if (node.id === "impl") {
+          return { status: "fail", failure_reason: "impl failed" } as Outcome;
+        }
+        return `Done: ${node.id}`;
+      },
+    };
+
+    const logsRoot = await tempDir();
+    await runPipeline({ graph: g, logsRoot, backend: failBackend });
+
+    const cpJson = await readFile(join(logsRoot, "checkpoint.json"), "utf-8");
+    const checkpoint = JSON.parse(cpJson);
+    const findings = checkpoint.context_values[REVIEW_FINDINGS_KEY];
+    // Should be undefined — regular codergen nodes don't contribute findings
+    expect(findings).toBeUndefined();
+  });
+
+  it("accumulates findings from multiple failing review stages", async () => {
+    const backend: CodergenBackend = {
+      async run(node) {
+        if (node.id === "rev1") {
+          return {
+            status: "fail",
+            failure_reason: "code quality issues",
+            context_updates: {
+              "rev1.response": "Bad code",
+              "rev1._full_response": "Full bad code review",
+            },
+          } as Outcome;
+        }
+        if (node.id === "rev2") {
+          return {
+            status: "fail",
+            failure_reason: "security vulnerability",
+            context_updates: {
+              "rev2.response": "SQL injection",
+              "rev2._full_response": "Full security review",
+            },
+          } as Outcome;
+        }
+        return `Done: ${node.id}`;
+      },
+    };
+
+    const g = graph({
+      attrs: { goal: "Test multi findings" },
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "rev1", shape: "box", auto_status: true },
+        { id: "rev2", shape: "box", auto_status: true },
+        { id: "gate", shape: "diamond" },
+        { id: "fix", shape: "box" },
+      ],
+      edges: [
+        { from: "start", to: "rev1" },
+        { from: "rev1", to: "rev2" },   // Unconditional — all reviews run
+        { from: "rev2", to: "gate" },
+        { from: "gate", to: "exit", condition: "outcome=success" },
+        { from: "gate", to: "fix", condition: "outcome!=success" },
+        { from: "fix", to: "exit" },
+      ],
+    });
+
+    const logsRoot = await tempDir();
+    await runPipeline({ graph: g, logsRoot, backend });
+
+    const cpJson = await readFile(join(logsRoot, "checkpoint.json"), "utf-8");
+    const checkpoint = JSON.parse(cpJson);
+    const findings = checkpoint.context_values[REVIEW_FINDINGS_KEY] as ReviewFinding[];
+    expect(findings).toBeDefined();
+    expect(findings.length).toBe(2);
+    expect(findings[0].stageId).toBe("rev1");
+    expect(findings[1].stageId).toBe("rev2");
+  });
+
+  it("partial_success contributes findings", async () => {
+    const backend: CodergenBackend = {
+      async run(node) {
+        if (node.id === "rev1") {
+          return {
+            status: "partial_success",
+            failure_reason: "minor issues",
+            context_updates: {
+              "rev1.response": "Mostly ok",
+              "rev1._full_response": "Mostly ok - full",
+            },
+          } as Outcome;
+        }
+        return `Done: ${node.id}`;
+      },
+    };
+
+    const g = graph({
+      attrs: { goal: "Test partial_success findings" },
+      nodes: [
+        { id: "start", shape: "Mdiamond" },
+        { id: "exit", shape: "Msquare" },
+        { id: "rev1", shape: "box", auto_status: true },
+      ],
+      edges: [
+        { from: "start", to: "rev1" },
+        { from: "rev1", to: "exit" },
+      ],
+    });
+
+    const logsRoot = await tempDir();
+    await runPipeline({ graph: g, logsRoot, backend });
+
+    const cpJson = await readFile(join(logsRoot, "checkpoint.json"), "utf-8");
+    const checkpoint = JSON.parse(cpJson);
+    const findings = checkpoint.context_values[REVIEW_FINDINGS_KEY] as ReviewFinding[];
+    expect(findings).toBeDefined();
+    expect(findings.length).toBe(1);
+    expect(findings[0].status).toBe("partial_success");
+    expect(findings[0].failureReason).toBe("minor issues");
   });
 });
 

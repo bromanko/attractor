@@ -15,8 +15,8 @@ import {
   loadPromptFiles,
   expandPath,
 } from "./pi-backend.js";
-import { Context, HUMAN_GATE_KEYS } from "./pipeline/types.js";
-import type { GraphNode } from "./pipeline/types.js";
+import { Context, HUMAN_GATE_KEYS, REVIEW_FINDINGS_KEY } from "./pipeline/types.js";
+import type { GraphNode, ReviewFinding } from "./pipeline/types.js";
 import type {
   CreateAgentSessionOptions,
   CreateAgentSessionResult,
@@ -436,6 +436,75 @@ describe("buildContextSummary", () => {
     const summary = buildContextSummary(ctx);
     expect(summary).not.toContain("z".repeat(500));
     expect(summary).toContain("z".repeat(200));
+  });
+
+  it("renders review findings as structured section", () => {
+    const ctx = new Context();
+    const findings: ReviewFinding[] = [
+      {
+        stageId: "review_code",
+        iteration: 1,
+        status: "fail",
+        failureReason: "Missing error handling",
+        response: "Full review text about error handling",
+        timestamp: "2025-01-01T00:00:00.000Z",
+      },
+      {
+        stageId: "review_security",
+        iteration: 1,
+        status: "fail",
+        failureReason: "SQL injection risk",
+        response: "Full security review text",
+        timestamp: "2025-01-01T00:00:01.000Z",
+      },
+    ];
+    ctx.set(REVIEW_FINDINGS_KEY, findings);
+
+    const summary = buildContextSummary(ctx);
+    expect(summary).toContain("## Outstanding Review Findings");
+    expect(summary).toContain("### review_code (fail)");
+    expect(summary).toContain("**Reason:** Missing error handling");
+    expect(summary).toContain("Full review text about error handling");
+    expect(summary).toContain("### review_security (fail)");
+    expect(summary).toContain("SQL injection risk");
+  });
+
+  it("excludes review.findings from generic key dump", () => {
+    const ctx = new Context();
+    const findings: ReviewFinding[] = [
+      {
+        stageId: "rev1",
+        iteration: 1,
+        status: "fail",
+        failureReason: "bad",
+        response: "details",
+        timestamp: "2025-01-01T00:00:00.000Z",
+      },
+    ];
+    ctx.set(REVIEW_FINDINGS_KEY, findings);
+    ctx.set("other.key", "other_value");
+
+    const summary = buildContextSummary(ctx);
+    // The structured section should be present
+    expect(summary).toContain("## Outstanding Review Findings");
+    // But review.findings should NOT appear as a raw JSON blob in the generic section
+    const lines = summary.split("\n");
+    const genericLines = lines.filter((l) => l.trimStart().startsWith("review.findings:"));
+    expect(genericLines).toHaveLength(0);
+  });
+
+  it("skips findings section when findings array is empty", () => {
+    const ctx = new Context();
+    ctx.set(REVIEW_FINDINGS_KEY, []);
+    const summary = buildContextSummary(ctx);
+    expect(summary).not.toContain("Outstanding Review Findings");
+  });
+
+  it("skips findings section when no findings key exists", () => {
+    const ctx = new Context();
+    ctx.set("some.key", "value");
+    const summary = buildContextSummary(ctx);
+    expect(summary).not.toContain("Outstanding Review Findings");
   });
 });
 

@@ -11,8 +11,9 @@ import type {
   Checkpoint, PipelineEvent, PipelineEventKind,
   Interviewer, CodergenBackend,
   UsageMetrics, StageAttemptUsage, RunUsageSummary, UsageUpdatePayload,
+  ReviewFinding,
 } from "./types.js";
-import { Context, SHAPE_TO_TYPE, HUMAN_GATE_KEYS } from "./types.js";
+import { Context, SHAPE_TO_TYPE, HUMAN_GATE_KEYS, REVIEW_FINDINGS_KEY } from "./types.js";
 import { HandlerRegistry } from "./handlers.js";
 import { evaluateCondition } from "./conditions.js";
 import { findStartNode, findExitNodes, validateOrRaise } from "./validator.js";
@@ -168,6 +169,103 @@ function retryDelay(attempt: number): number {
   const capped = Math.min(delay, 60_000);
   const jitter = capped * (0.5 + Math.random());
   return jitter;
+}
+
+// ---------------------------------------------------------------------------
+// Review findings accumulation (Section 5.2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether a node is a review-eligible stage (auto_status=true).
+ * These stages produce findings when they fail or partially succeed.
+ */
+function isReviewEligible(node: GraphNode): boolean {
+  return node.attrs.auto_status === true || node.attrs.auto_status === "true";
+}
+
+/**
+ * Whether a node is a tool stage (shape=parallelogram or type=tool).
+ * Tool stages also contribute findings on failure.
+ */
+function isToolStage(node: GraphNode): boolean {
+  return node.attrs.shape === "parallelogram" || node.attrs.type === "tool";
+}
+
+/**
+ * Get the response key base for a node, supporting response_key_base override.
+ */
+function getResponseKeyBase(node: GraphNode): string {
+  const raw = node.attrs.response_key_base;
+  if (typeof raw === "string" && raw.trim().length > 0) {
+    return raw.trim();
+  }
+  return node.id;
+}
+
+/**
+ * Count how many times a stage has contributed to findings (for iteration tracking).
+ */
+function countStageIterations(context: ContextType, stageId: string): number {
+  const existing = context.get(REVIEW_FINDINGS_KEY);
+  if (!Array.isArray(existing)) return 0;
+  return (existing as ReviewFinding[]).filter((f) => f.stageId === stageId).length;
+}
+
+/**
+ * Accumulate a ReviewFinding for a failed/partial review or tool stage.
+ * On success, clear prior findings for the stage.
+ */
+function updateReviewFindings(
+  node: GraphNode,
+  outcome: Outcome,
+  context: ContextType,
+): void {
+  const eligible = isReviewEligible(node);
+  const tool = isToolStage(node);
+
+  if (!eligible && !tool) return;
+
+  const isFailed = outcome.status === "fail" || outcome.status === "partial_success";
+
+  if (isFailed) {
+    const keyBase = getResponseKeyBase(node);
+
+    // Build response from available sources
+    let response: string;
+    if (tool && outcome.tool_failure) {
+      // Tool stage: combine digest + tail outputs
+      const tf = outcome.tool_failure;
+      const parts = [tf.digest];
+      if (tf.stdoutTail) parts.push(`stdout: ${tf.stdoutTail}`);
+      if (tf.stderrTail) parts.push(`stderr: ${tf.stderrTail}`);
+      response = parts.join("\n");
+    } else {
+      response =
+        context.getString(`${keyBase}._full_response`) ||
+        context.getString(`${keyBase}.response`) ||
+        outcome.failure_reason ||
+        "";
+    }
+
+    const finding: ReviewFinding = {
+      stageId: node.id,
+      iteration: countStageIterations(context, node.id) + 1,
+      status: outcome.status,
+      failureReason: outcome.failure_reason ?? "",
+      response,
+      timestamp: new Date().toISOString(),
+    };
+    context.appendToArray(REVIEW_FINDINGS_KEY, finding);
+  } else if (outcome.status === "success") {
+    // Clear stale findings for this stage on success
+    const existing = context.get(REVIEW_FINDINGS_KEY);
+    if (Array.isArray(existing)) {
+      context.set(
+        REVIEW_FINDINGS_KEY,
+        (existing as ReviewFinding[]).filter((f) => f.stageId !== node.id),
+      );
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -724,6 +822,9 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
       context.set("preferred_label", outcome.preferred_label);
     }
 
+    // Accumulate review findings for review-eligible and tool stages
+    updateReviewFindings(node, outcome, context);
+
     // Emit usage_update event for any usage collected in this stage
     // (usage was already extracted and accumulated in the retry loop above)
     {
@@ -804,8 +905,14 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
     // Unconditional edges to regular execution nodes should NOT be followed
     // on failure — that would silently swallow errors like workspace creation
     // failures.
+    //
+    // Exception: review-eligible (auto_status=true) stages produce fail/success
+    // as part of their normal operation — their failure is an expected outcome,
+    // not an unexpected error. These stages use normal edge selection so
+    // unconditional transitions between sequential review stages work.
     const isFailed = outcome.status === "fail" || outcome.status === "retry";
-    const nextEdge = isFailed && !isConditional
+    const useNormalEdgeSelection = isConditional || isReviewEligible(node);
+    const nextEdge = isFailed && !useNormalEdgeSelection
       ? selectFailureEdge(node, outcome, context, graph)
       : selectEdge(node, outcome, context, graph);
 
