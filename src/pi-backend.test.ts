@@ -196,6 +196,7 @@ describe("defaultParseOutcome", () => {
     );
     expect(outcome.status).toBe("fail");
     expect(outcome.failure_reason).toBe("Missing [STATUS: ...] marker in response");
+    expect(outcome.failure_class).toBe("missing_status_marker");
   });
 
   it("fails auto_status=true node with empty response", () => {
@@ -206,6 +207,36 @@ describe("defaultParseOutcome", () => {
     );
     expect(outcome.status).toBe("fail");
     expect(outcome.failure_reason).toBe("Missing [STATUS: ...] marker in response");
+    expect(outcome.failure_class).toBe("empty_response");
+  });
+
+  it("uses last status marker when multiple appear in response (last-marker-wins)", () => {
+    const text =
+      "Earlier I mentioned [STATUS: fail] as an example.\n" +
+      "But the actual result is:\n[STATUS: success]";
+    const outcome = defaultParseOutcome(text, reviewNode, ctx);
+    expect(outcome.status).toBe("success");
+    expect(outcome.failure_class).toBeUndefined();
+  });
+
+  it("uses last status marker even when it is fail (last-marker-wins)", () => {
+    const text =
+      "Initially all looked fine [STATUS: success]\n" +
+      "But then I found a critical bug.\n[STATUS: fail]";
+    const outcome = defaultParseOutcome(text, reviewNode, ctx);
+    expect(outcome.status).toBe("fail");
+    expect(outcome.failure_class).toBeUndefined();
+  });
+
+  it("does not set failure_class for semantic [STATUS: fail]", () => {
+    const outcome = defaultParseOutcome(
+      "Issues found. [STATUS: fail]\n[FAILURE_REASON: Bad code]",
+      reviewNode,
+      ctx,
+    );
+    expect(outcome.status).toBe("fail");
+    expect(outcome.failure_reason).toBe("Bad code");
+    expect(outcome.failure_class).toBeUndefined();
   });
 
   // --- codergen nodes (box shape) ignore status markers ---

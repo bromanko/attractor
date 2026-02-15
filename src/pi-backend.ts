@@ -130,9 +130,14 @@ export function defaultParseOutcome(
   };
 
   // Status marker — only honoured when the node opts in (see shouldParseStatusMarkers).
-  const statusMatch = text.match(
-    /\[STATUS:\s*(success|fail|partial_success|retry)\]/i,
-  );
+  // Use the LAST marker in the response (more robust when models include
+  // examples or references to markers earlier in their output).
+  const statusMatches = [
+    ...text.matchAll(/\[STATUS:\s*(success|fail|partial_success|retry)\]/gi),
+  ];
+  const statusMatch = statusMatches.length > 0
+    ? statusMatches[statusMatches.length - 1]
+    : null;
   const shouldParseStatus = shouldParseStatusMarkers(node);
   const requiresStatusMarker = node.attrs.auto_status === true || node.attrs.auto_status === "true";
 
@@ -141,6 +146,9 @@ export function defaultParseOutcome(
   } else if (requiresStatusMarker) {
     outcome.status = "fail";
     outcome.failure_reason = "Missing [STATUS: ...] marker in response";
+    outcome.failure_class = text.trim().length === 0
+      ? "empty_response"
+      : "missing_status_marker";
   }
 
   // Preferred label
