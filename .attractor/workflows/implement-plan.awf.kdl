@@ -19,7 +19,7 @@ workflow "Implement Plan" {
     route when="true" to="human_review"
   }
 
-  stage "fix" kind="llm" model="claude-opus-4-6" provider="anthropic" prompt="Fix issues from CI and review findings." {
+  stage "fix" kind="llm" model="claude-opus-4-6" provider="anthropic" prompt="Fix all outstanding issues listed in the review findings below. Address every finding. Commit your fixes incrementally." {
     retry max_attempts=3 backoff="exponential"
   }
 
@@ -41,12 +41,9 @@ workflow "Implement Plan" {
   transition from="implement" to="selfci"
   transition from="selfci" to="review_code" when="outcome(\"selfci\") == \"success\""
   transition from="selfci" to="fix" when="outcome(\"selfci\") != \"success\""
-  transition from="review_code" to="review_security" when="outcome(\"review_code\") == \"success\""
-  transition from="review_code" to="gate" when="outcome(\"review_code\") != \"success\""
-  transition from="review_security" to="review_perf" when="outcome(\"review_security\") == \"success\""
-  transition from="review_security" to="gate" when="outcome(\"review_security\") != \"success\""
-  transition from="review_perf" to="review_tests" when="outcome(\"review_perf\") == \"success\""
-  transition from="review_perf" to="gate" when="outcome(\"review_perf\") != \"success\""
+  transition from="review_code" to="review_security"
+  transition from="review_security" to="review_perf"
+  transition from="review_perf" to="review_tests"
   transition from="review_tests" to="gate"
   transition from="fix" to="selfci"
   transition from="revise" to="selfci"

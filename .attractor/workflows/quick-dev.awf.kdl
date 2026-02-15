@@ -32,7 +32,7 @@ workflow "Quick Dev" {
     route when="true" to="exit"
   }
 
-  stage "fix" kind="llm" prompt="Fix issues from CI and review findings without changing scope." {
+  stage "fix" kind="llm" prompt="Fix all outstanding issues listed in the review findings below. Address every finding without changing scope. Commit your fixes incrementally." {
     retry max_attempts=3 backoff="exponential"
   }
 
@@ -44,12 +44,9 @@ workflow "Quick Dev" {
   transition from="implement" to="selfci"
   transition from="selfci" to="review_code" when="outcome(\"selfci\") == \"success\""
   transition from="selfci" to="fix" when="outcome(\"selfci\") != \"success\""
-  transition from="review_code" to="review_security" when="outcome(\"review_code\") == \"success\""
-  transition from="review_code" to="gate" when="outcome(\"review_code\") != \"success\""
-  transition from="review_security" to="review_perf" when="outcome(\"review_security\") == \"success\""
-  transition from="review_security" to="gate" when="outcome(\"review_security\") != \"success\""
-  transition from="review_perf" to="review_tests" when="outcome(\"review_perf\") == \"success\""
-  transition from="review_perf" to="gate" when="outcome(\"review_perf\") != \"success\""
+  transition from="review_code" to="review_security"
+  transition from="review_security" to="review_perf"
+  transition from="review_perf" to="review_tests"
   transition from="review_tests" to="gate"
   transition from="fix" to="selfci"
 }
