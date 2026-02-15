@@ -9,10 +9,10 @@ workflow "Implement Plan" {
 
   stage "selfci" kind="tool" command="CANDIDATE=$(jj log -r 'latest(heads(::@ ~ empty()))' --no-graph -T 'commit_id.short()' --limit 1) && nix develop -c selfci check --candidate $CANDIDATE"
 
-  stage "review_code" kind="llm" model="claude-opus-4-6" provider="anthropic" auto_status=true prompt_file=".pi/skills/attractor-typescript-code-review/SKILL.md"
-  stage "review_security" kind="llm" model="claude-opus-4-6" provider="anthropic" auto_status=true prompt_file=".pi/skills/attractor-typescript-security-review/SKILL.md"
-  stage "review_perf" kind="llm" model="claude-opus-4-6" provider="anthropic" auto_status=true prompt_file=".pi/skills/attractor-typescript-performance-review/SKILL.md"
-  stage "review_tests" kind="llm" model="claude-opus-4-6" provider="anthropic" auto_status=true prompt_file=".pi/skills/attractor-typescript-test-review/SKILL.md"
+  stage "review_code" kind="llm" model="claude-opus-4-6" provider="anthropic" auto_status=true prompt_file=".pi/skills/attractor-typescript-code-review/SKILL.md,.attractor/prompts/review-status-markers.md"
+  stage "review_security" kind="llm" model="claude-opus-4-6" provider="anthropic" auto_status=true prompt_file=".pi/skills/attractor-typescript-security-review/SKILL.md,.attractor/prompts/review-status-markers.md"
+  stage "review_perf" kind="llm" model="claude-opus-4-6" provider="anthropic" auto_status=true prompt_file=".pi/skills/attractor-typescript-performance-review/SKILL.md,.attractor/prompts/review-status-markers.md"
+  stage "review_tests" kind="llm" model="claude-opus-4-6" provider="anthropic" auto_status=true prompt_file=".pi/skills/attractor-typescript-test-review/SKILL.md,.attractor/prompts/review-status-markers.md"
 
   stage "gate" kind="decision" {
     route when="outcome(\"review_code\") != \"success\" || outcome(\"review_security\") != \"success\" || outcome(\"review_perf\") != \"success\" || outcome(\"review_tests\") != \"success\" || outcome(\"selfci\") != \"success\"" to="fix"
